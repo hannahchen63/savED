@@ -57,16 +57,55 @@ function decide(text) {
 }
 
 // ---- 1. Find the caption inside a post ----------------------------------
-// Instagram's class names are scrambled, so we don't use them.
-// The caption is usually the longest piece of text inside the post.
-function getCaption(article) {
-  let best = "";
+// Instagram's class names are scrambled, so we use the page structure:
+// - Instagram marks the caption with an <h1> when a post is opened.
+// - Otherwise the caption is the first real block of text in the post
+//   (comments come after it).
+// - Text in the post's <header> (username, location, audio) is skipped.
+// Comments are returned separately so they can count for very little.
+const COMMENT_WEIGHT = 0; // comments are left out (set to 0.1 to count them at 10%)
+
+const UI_TEXT = new RegExp(
+  "^(follow|following|original audio|reply|replies|see translation|more|… ?more|" +
+  "suggested for you|add a comment.*|be the first to like this|" +
+  "view (all )?[\\d,]* ?(more )?(comments|replies)|view replies.*|" +
+  "liked by .*|[\\d,.]+[km]? (likes?|comments?|views?)|\\d+[smhdw]|" +
+  "\\d+ (seconds?|minutes?|hours?|days?|weeks?) ago)$", "i");
+
+function textBlocks(article) {
+  const blocks = [];
   article.querySelectorAll("h1, span").forEach((el) => {
-    if (el.closest(".ed-overlay")) return; // skip our own overlay text
+    if (el.closest(".ed-overlay") || el.closest("header")) return;
+    // Links are usernames, song/audio names, and locations, never the caption.
+    // (Hashtags inside a caption are links too, but the caption around them isn't.)
+    if (el.closest("a") || el.closest("[role='link']")) return;
     const t = (el.innerText || "").trim();
-    if (t.length > best.length) best = t;
+    if (!t || UI_TEXT.test(t)) return;
+    if (!/\s/.test(t) && t.length < 30) return; // usernames, single words, hashtags
+    blocks.push({ el, t });
   });
-  return best.slice(0, 500);
+  // Keep the outermost element of nested ones (avoids counting text twice)
+  return blocks.filter((b) => !blocks.some((o) => o !== b && o.el.contains(b.el)));
+}
+
+function getCaptionAndComments(article) {
+  const blocks = textBlocks(article);
+  const h1 = article.querySelector("h1");
+  const h1Text = h1 && !h1.closest("header") ? (h1.innerText || "").trim() : "";
+
+  let caption = h1Text;
+  let rest = blocks;
+  if (!caption && blocks.length) {
+    caption = blocks[0].t;
+    rest = blocks.slice(1);
+  }
+  const comments = rest
+    .map((b) => b.t)
+    .filter((t) => t !== caption && !caption.includes(t));
+  return {
+    caption: caption.slice(0, 500),
+    comments: comments.join(" | ").slice(0, 500),
+  };
 }
 
 // ---- 1b. Read text inside the post's images -----------------------------
@@ -84,11 +123,16 @@ function getImageText(article) {
   return found.join(" ").slice(0, 300);
 }
 
-// The text we check: caption plus any text found in the images.
+// The main text we check: caption plus any text found in the images.
+// Comments are kept apart and count for very little.
 function getPostText(article) {
-  const caption = getCaption(article);
+  const { caption, comments } = getCaptionAndComments(article);
   const imageText = getImageText(article);
-  return { text: [caption, imageText].filter(Boolean).join(" "), imageText };
+  return {
+    text: [caption, imageText].filter(Boolean).join(" "),
+    imageText,
+    comments,
+  };
 }
 
 // ---- 2. Show a post in a given state ------------------------------------
@@ -125,6 +169,22 @@ function buildOverlay(article, state) {
   msg.textContent = state === "checking" ? "Checking this post..." : MESSAGE;
   overlay.appendChild(msg);
 
+  // Testing aid: show why this post was blurred, right on the cover.
+  // Turn off for the final demo by setting DEBUG = false at the top.
+  if (DEBUG && state === "blur") {
+    const text = postText.get(article) || "";
+    const s = scores.get(text) || {};
+    const why = [];
+    if (s.ed != null && s.ed >= edCutoff()) why.push(`ed ${s.ed.toFixed(2)} ≥ ${edCutoff().toFixed(2)}`);
+    if (settings.strict && s.diet != null && s.diet >= dietCutoff()) {
+      why.push(`diet ${s.diet.toFixed(2)} ≥ ${dietCutoff().toFixed(2)}`);
+    }
+    const info = document.createElement("small");
+    info.className = "ed-debug";
+    info.textContent = `Why: ${why.join(", ") || "unknown"} | Caption read: "${text.slice(0, 140)}"`;
+    overlay.appendChild(info);
+  }
+
   if (state === "blur") {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -152,7 +212,7 @@ function rerenderAll() {
 
 // ---- 3. Check one post --------------------------------------------------
 function checkPost(article) {
-  const { text, imageText } = getPostText(article);
+  const { text, imageText, comments } = getPostText(article);
   if (!text) return; // text may not have loaded yet; try again later
   postText.set(article, text);
 
@@ -165,29 +225,54 @@ function checkPost(article) {
   pending.add(text);
   render(article, decide(text));
 
-  // Always ask for both scores, so the strict switch and the slider
-  // can change what's blurred instantly without asking again.
-  chrome.runtime.sendMessage(
-    { type: "classify", text, threshold: 0.4, strict: true },
-    (res) => {
+  // Score the caption, and the comments separately (if any).
+  Promise.all([ask(text), comments && COMMENT_WEIGHT > 0 ? ask(comments) : Promise.resolve(null)])
+    .then(([cap, com]) => {
       pending.delete(text);
-      if (!res || !res.ok) {
+      if (!cap) {
         // Server not running or crashed: show the post and warn in the console.
-        console.warn("[Gentle Feed] server unreachable:", res && res.error);
         scores.set(text, { ed: 0, diet: null });
         rerenderAll();
         return;
       }
-      scores.set(text, { ed: res.ed_score, diet: res.diet_score });
+      // Final score = caption score + a small share of the comment score.
+      // A comment alone (at most 0.1) can never pass any cutoff.
+      const add = (a, b) => (a == null ? null : Math.min(1, a + COMMENT_WEIGHT * (b || 0)));
+      const final = {
+        ed: add(cap.ed_score, com && com.ed_score),
+        diet: add(cap.diet_score, com && com.diet_score),
+        capEd: cap.ed_score, capDiet: cap.diet_score,
+        comEd: com ? com.ed_score : null, comDiet: com ? com.diet_score : null,
+      };
+      scores.set(text, final);
       if (DEBUG) {
-        const diet = res.diet_score == null ? "n/a" : res.diet_score.toFixed(2);
-        console.log(`[Gentle Feed] ed=${res.ed_score.toFixed(2)} diet=${diet} ` +
-          `-> ${decide(text)}`, text.slice(0, 80));
+        const f = (x) => (x == null ? "n/a" : x.toFixed(2));
+        const comPart = COMMENT_WEIGHT > 0
+          ? ` (comments ed=${f(final.comEd)} diet=${f(final.comDiet)} x${COMMENT_WEIGHT})` : "";
+        console.log(`[Gentle Feed] ed=${f(final.ed)} diet=${f(final.diet)} -> ${decide(text)}${comPart}`,
+          text.slice(0, 80));
         if (imageText) console.log(`[Gentle Feed]   image text: "${imageText.slice(0, 120)}"`);
       }
       rerenderAll();
-    }
-  );
+    });
+}
+
+// Ask the server for both scores. Always includes the diet score, so the
+// strict switch and the slider can change what's blurred instantly.
+function ask(text) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { type: "classify", text, threshold: 0.4, strict: true },
+      (res) => {
+        if (!res || !res.ok) {
+          console.warn("[Gentle Feed] server unreachable:", res && res.error);
+          resolve(null);
+        } else {
+          resolve(res);
+        }
+      }
+    );
+  });
 }
 
 // ---- 4. Scan the page, and rescan as posts load or get rebuilt ----------

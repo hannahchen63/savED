@@ -50,3 +50,13 @@ article[data-ed-state="blur"] > *:not(.ed-overlay) {
 .ed-show-btn:hover {
   background: #f0f0f0;
 }
+
+/* Testing aid: shows scores and the text that was read (DEBUG = true) */
+.ed-debug {
+  max-width: 90%;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #777;
+  font-family: ui-monospace, Menlo, monospace;
+  word-break: break-word;
+}
