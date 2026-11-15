@@ -38,6 +38,21 @@ def clean(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
+# Split a caption into its paragraphs (separated by blank lines), cleaned.
+# Very short pieces are skipped: the diet model gives unreliable scores
+# to tiny bits of text. At most 8 paragraphs, to keep it fast.
+MIN_PARAGRAPH_CHARS = 20
+MAX_PARAGRAPHS = 8
+
+
+def paragraphs(raw):
+    parts = [clean(p) for p in re.split(r"\n\s*\n", raw)]
+    parts = [p for p in parts if len(p) >= MIN_PARAGRAPH_CHARS]
+    if len(parts) < 2:
+        return []  # only one paragraph: the whole caption is already scored
+    return parts[:MAX_PARAGRAPHS]
+
+
 # =========================================================================
 # Layer 1: eating disorder model
 # =========================================================================
@@ -269,7 +284,8 @@ def health():
 @app.route("/classify", methods=["POST"])
 def classify():
     data = request.get_json(silent=True) or {}
-    text = clean(str(data.get("text", "")))
+    raw = str(data.get("text", ""))
+    text = clean(raw)
     strict = bool(data.get("strict", False))
     try:
         threshold = float(data.get("threshold", DEFAULT_THRESHOLD))
@@ -285,10 +301,14 @@ def classify():
     else:
         ed, mode = placeholder_score(text), "placeholder"
 
-    # Layer 2 (only in strict mode)
+    # Layer 2 (only in strict mode). Scores the whole caption AND each
+    # paragraph on its own, and keeps the highest. A diet line like
+    # "macros: 275 cal | 30g protein" then isn't drowned out by a long recipe.
     diet = None
     if strict and diet_clf is not None:
         diet = diet_score(text)
+        for part in paragraphs(raw):
+            diet = max(diet, diet_score(part))
 
     reason = None
     if ed >= threshold:
