@@ -1,8 +1,18 @@
+/* Make covered posts "relative" so the cover can sit on top, except things
+   that already float (like TikTok's full-screen viewer), which keep theirs. */
+[data-ed-state="checking"][data-ed-pos="set"],
+[data-ed-state="blur"][data-ed-pos="set"] {
+  position: relative !important;
+}
+
 /* Posts and videos being checked or flagged: blur everything except our
    overlay. We use a data attribute because Instagram overwrites class names. */
 [data-ed-state="checking"],
 [data-ed-state="blur"] {
-  position: relative !important;
+  /* Keep our cover inside this post: without this, covers on posts in the
+     background could draw on top of the site's own pop-ups (like TikTok's
+     video viewer). */
+  isolation: isolate;
 }
 
 [data-ed-state="checking"] > *:not(.ed-overlay),
@@ -15,7 +25,7 @@
 .ed-overlay {
   position: absolute;
   inset: 0;
-  z-index: 9999;
+  z-index: 2147483647; /* top layer, but only inside its own post (see isolation) */
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -78,4 +88,25 @@
 [data-ed-site="video"] > .ed-overlay {
   background: #f4f1ec;
   border-radius: 12px;
+}
+
+/* Copies of TikTok's close button and up/down arrows on the viewer cover */
+.ed-overlay .ed-proxy {
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(22, 24, 35, 0.6);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.ed-overlay .ed-proxy:hover {
+  background: rgba(22, 24, 35, 0.8);
 }

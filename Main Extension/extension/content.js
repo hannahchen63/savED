@@ -1,5 +1,6 @@
 // content.js
-// Runs on instagram.com, youtube.com, and tiktok.com. Finds each post or video, reads its
+// Runs on instagram.com, youtube.com, and tiktok.com.
+// On Instagram it checks feed posts, opened posts, and search/Explore grids. Finds each post or video, reads its
 // text, asks the server for scores, and blurs it if a score passes its cutoff.
 
 const HIDE_WHILE_CHECKING = true; // blur posts until the server answers (safer)
@@ -236,25 +237,133 @@ function getTikTokItems() {
   const items = Array.from(document.querySelectorAll(`${TT_FEED}, ${TT_TILES}`))
     .filter((el) => !(el.parentElement && el.parentElement.closest(`${TT_FEED}, ${TT_TILES}`)));
 
-  // A video open on its own page: cover both the player and the caption box
-  const desc = document.querySelector("[data-e2e='browse-video-desc']");
-  if (desc) {
-    const player = document.querySelector("[data-e2e='browse-video']") ||
-      document.querySelector("[class*='DivVideoContainer'], [class*='DivBrowserModeContainer'] video")?.closest("div");
-    [player, desc].forEach((el) => {
-      if (el && !items.includes(el)) {
-        el.dataset.edRole = "tt-open";
-        items.push(el);
-      }
-    });
+  // TikTok's full-screen viewer (opened by clicking a video or photo):
+  // ONE cover over the whole viewer: video or photo, caption, comments.
+  const viewer = openViewer(items);
+  if (viewer) {
+    if (!items.includes(viewer)) {
+      viewer.dataset.edRole = "tt-open";
+      items.push(viewer);
+    }
+    return items;
+  }
+
+  // (If the whole viewer can't be found, cover its parts separately.)
+  // The full-screen viewer's player, when TikTok labels it
+  const labeledPlayer = document.querySelector("[data-e2e='browse-video']");
+  if (labeledPlayer && !items.includes(labeledPlayer)) {
+    labeledPlayer.dataset.edRole = "tt-open";
+    items.push(labeledPlayer);
+  }
+
+  // TikTok's full-screen viewer (opened by clicking a video or photo):
+  // cover its ONE main video or photo, and its caption panel. Only while
+  // the viewer is open, and only the biggest media on screen that isn't
+  // inside a tile, so nothing else on the page gets covered.
+  const panel = openCaptionPanel();
+  if (panel) {
+    const main = mainViewerMedia(items);
+    if (main && !items.some((it) => it === main || it.contains(main))) {
+      main.dataset.edRole = "tt-video";
+      items.push(main);
+    }
+    if (!items.some((it) => it === panel || it.contains(panel))) {
+      panel.dataset.edRole = "tt-open";
+      items.push(panel);
+    }
   }
   return items;
 }
 
+// The whole full-screen viewer: the smallest box that holds both its
+// caption and its main video or photo (and so also its comments).
+function openViewer(items) {
+  const desc = document.querySelector("[data-e2e='browse-video-desc']");
+  if (!desc) return null;
+  const media = mainViewerMedia(items);
+  if (!media) return null;
+  let box = desc.parentElement;
+  while (box && !box.contains(media)) box = box.parentElement;
+  if (!box || box === document.body || box === document.documentElement) return null;
+  return box;
+}
+
+// The viewer's main video or photo: the biggest one fully on screen that
+// isn't inside a tile. Returns the box around it (about the same size).
+function mainViewerMedia(items) {
+  const h = window.innerHeight || 800;
+  let bestMedia = null;
+  let bestArea = 0;
+  document.querySelectorAll("video, img").forEach((m) => {
+    if (m.closest(".ed-overlay")) return;
+    if (items.some((it) => it.contains(m))) return;
+    const r = m.getBoundingClientRect();
+    if (r.width < 250 || r.height < 250) return;      // small or hidden
+    const visible = Math.max(0, Math.min(r.bottom, h) - Math.max(r.top, 0)) * r.width;
+    if (visible > bestArea) { bestArea = visible; bestMedia = m; }
+  });
+  if (!bestMedia) return null;
+  const mr = bestMedia.getBoundingClientRect();
+  let box = bestMedia.parentElement;
+  let best = box;
+  while (box && box !== document.body) {
+    const r = box.getBoundingClientRect();
+    if (r.width > mr.width * 1.4 || r.height > mr.height * 1.4) break;
+    best = box;
+    box = box.parentElement;
+  }
+  return best;
+}
+
+// The box around the full-screen viewer's caption: go up from the caption
+// while the box stays about as wide as the caption and not too tall.
+function openCaptionPanel() {
+  const desc = document.querySelector("[data-e2e='browse-video-desc']");
+  if (!desc) return null;
+  const dr = desc.getBoundingClientRect();
+  let box = desc;
+  let best = desc;
+  while (box && box.parentElement && box.parentElement !== document.body) {
+    box = box.parentElement;
+    const r = box.getBoundingClientRect();
+    if (!dr.width || r.width > dr.width * 1.3 || r.height > 450) break;
+    if (box.querySelector("video, [data-e2e='comment-list'], [data-e2e*='comment-item']")) break;
+    best = box;
+  }
+  return best;
+}
+
+// The text of the full-screen viewer's post: ONLY the caption (and a
+// title, if the post has one). Same text the thumbnail uses, so the
+// thumbnail and the viewer always get the same verdict. Leaves out the
+// username, date, "Follow", and the "more"/"less" button.
+function openCaptionText() {
+  const desc = document.querySelector("[data-e2e='browse-video-desc']");
+  if (!desc) return "";
+  const caption = clean(desc).replace(/\s*(…|\.\.\.)?\s*(more|less)$/i, "").trim();
+  const panel = openCaptionPanel();
+  const titleEl = panel && panel.querySelector("h1, h2, [data-e2e*='title']");
+  const title = titleEl && !titleEl.contains(desc) ? clean(titleEl) : "";
+  return [title && !caption.includes(title) ? title : "", caption].filter(Boolean).join("\n\n");
+}
+
+// The caption that belongs to a video box: the nearest caption around it,
+// or the full-screen viewer's caption.
+function captionNear(el) {
+  for (let up = el; up && up !== document.body; up = up.parentElement) {
+    const d = up.querySelector(TT_DESC);
+    if (d) return clean(d);
+  }
+  return clean(document.querySelector("[data-e2e='browse-video-desc']"));
+}
+
 function getTikTokText(el) {
-  // The open video: both parts share its caption
-  if (el.dataset.edRole === "tt-open") {
-    return clean(document.querySelector("[data-e2e='browse-video-desc']"));
+  if (el.dataset.edRole === "tt-open") return openCaptionText();
+  if (el.dataset.edRole === "tt-video") {
+    // In the full-screen viewer, its own caption box is the right one
+    // (searching nearby could pick up a caption from the grid behind it)
+    const open = openCaptionText();
+    return open || captionNear(el);
   }
   const desc = clean(el.querySelector(TT_DESC));
   if (desc) return desc;
@@ -263,11 +372,128 @@ function getTikTokText(el) {
   return img ? (img.getAttribute("alt") || "").trim() : "";
 }
 
+// ---- 1e. Instagram search / Explore grid ---------------------------------
+// Grid tiles are links to the post ("/p/..." or "/reel/...") with a
+// thumbnail inside. Instagram usually puts the post's caption in the
+// thumbnail's hidden image description, so we read it from there.
+function getInstagramTiles() {
+  return Array.from(document.querySelectorAll("a[href*='/p/'], a[href*='/reel/']"))
+    .filter((a) => {
+      if (a.closest("article")) return false;        // feed posts are handled whole
+      const r = a.getBoundingClientRect();
+      if (r.width < 100 || r.height < 100) return false; // not a tile
+      a.dataset.edRole = "ig-tile";
+      return true;
+    });
+}
+
+function getInstagramTileText(a) {
+  const img = a.querySelector("img[alt]");
+  let alt = img ? (img.getAttribute("alt") || "").trim() : "";
+  // Drop Instagram's "Photo by NAME on DATE." opening
+  alt = alt.replace(/^(photo|video|reel)s? (shared )?by .*? on [a-z]+ \d{1,2}, \d{4}( tagging [^.]*)?\.\s*/i, "");
+  // If it's an automatic description, keep only the text found in the image
+  const m = alt.match(/text that says\s*['"‘“]([\s\S]*)['"’”]/i);
+  if (m) return m[1].trim();
+  if (/^(may be|no photo description)/i.test(alt)) return "";
+  return alt;
+}
+
+// Many grid tiles (especially Reels) have no image description at all, so
+// the grid has no text to read. For those, we load the post's caption from
+// Instagram itself (the same caption you see when you open the post), at
+// most 3 at a time, and remember it so each post is loaded only once.
+const captionCache = new Map();  // post code -> caption ("" if none found)
+const captionLoading = new Set();
+const captionQueue = [];
+let captionRunning = 0;
+const MAX_CAPTION_LOADS = 6;     // loads at the same time
+const CAPTION_TIMEOUT_MS = 3000; // give up and show the tile after this
+
+function postCode(a) {
+  const m = (a.getAttribute("href") || "").match(/\/(p|reel)\/([^/?#]+)/);
+  return m ? m[2] : null;
+}
+
+function requestCaption(code) {
+  if (captionCache.has(code) || captionLoading.has(code)) return;
+  captionLoading.add(code);
+  captionQueue.push(code);
+  pumpCaptions();
+}
+
+function pumpCaptions() {
+  while (captionRunning < MAX_CAPTION_LOADS && captionQueue.length) {
+    const code = captionQueue.shift();
+    captionRunning++;
+    readPageTop(`/p/${code}/`, CAPTION_TIMEOUT_MS)
+      .then((html) => {
+        const caption = captionFromPage(html);
+        captionCache.set(code, caption);
+        if (DEBUG && !caption) console.log(`[Gentle Feed] no caption found for /p/${code}/`);
+      })
+      .catch(() => captionCache.set(code, ""))
+      .finally(() => {
+        captionLoading.delete(code);
+        captionRunning--;
+        pumpCaptions();
+        queueScan();
+      });
+  }
+}
+
+// Download only the top of a page (the caption is in its <head>), and stop
+// as soon as the <head> ends. Much faster than loading the whole page.
+async function readPageTop(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, { credentials: "include", signal: ctrl.signal });
+    if (!r.ok) return "";
+    if (!r.body || !r.body.getReader) return await r.text();
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let html = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      html += decoder.decode(value, { stream: true });
+      if (html.includes("</head>") || html.length > 400000) {
+        reader.cancel().catch(() => {});
+        break;
+      }
+    }
+    return html;
+  } catch (e) {
+    return ""; // timed out or failed: the tile will be shown
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Instagram's post page carries the caption in its preview tags, like:
+//   og:description = '123 likes, 4 comments - name on May 1, 2025: "caption".'
+//   og:title       = 'Name on Instagram: "caption"'
+function captionFromPage(html) {
+  if (!html) return "";
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const tags = [
+    doc.querySelector('meta[property="og:description"]'),
+    doc.querySelector('meta[name="description"]'),
+    doc.querySelector('meta[property="og:title"]'),
+  ].map((m) => (m && m.getAttribute("content")) || "");
+  for (const t of tags) {
+    const m = t.match(/:\s*["“]([\s\S]*?)["”]\s*\.?\s*$/);
+    if (m && m[1].trim()) return m[1].trim();
+  }
+  return "";
+}
+
 // Everything on the page that should be checked
 function getItems() {
   if (IS_YOUTUBE) return getYouTubeItems();
   if (IS_TIKTOK) return getTikTokItems();
-  return Array.from(document.querySelectorAll("article"));
+  return [...document.querySelectorAll("article"), ...getInstagramTiles()];
 }
 
 // The main text we check.
@@ -280,6 +506,16 @@ function getPostText(article) {
   }
   if (IS_TIKTOK) {
     return { text: getTikTokText(article).slice(0, 600), imageText: "", comments: "" };
+  }
+  if (article.dataset.edRole === "ig-tile") {
+    let text = getInstagramTileText(article);
+    let needCaption = null;
+    if (!text) {
+      const code = postCode(article);
+      if (code && captionCache.has(code)) text = captionCache.get(code);
+      else if (code) needCaption = code;
+    }
+    return { text: text.slice(0, 600), imageText: "", comments: "", needCaption };
   }
   const { caption, comments } = getCaptionAndComments(article);
   const imageText = getImageText(article);
@@ -310,6 +546,12 @@ function render(article, state) {
       if (p && p.catch) p.catch(() => {}); // browser may block autoplay; ignore
     }
   });
+  // Things that already float (like TikTok's viewer) keep their position;
+  // everything else is made "relative" so our cover can sit on top of it.
+  if (!article.hasAttribute("data-ed-pos")) {
+    const pos = getComputedStyle(article).position;
+    article.setAttribute("data-ed-pos", pos === "static" ? "set" : "keep");
+  }
   if (IS_VIDEO_SITE && !article.hasAttribute("data-ed-site")) {
     article.setAttribute("data-ed-site", "video");
   }
@@ -338,11 +580,15 @@ function buildOverlay(article, state) {
   // (YouTube watch page) put the message near the top so it's visible.
   const h = article.offsetHeight;
   if (h && h < 170) overlay.classList.add("ed-small");
-  if (h > window.innerHeight * 0.9) overlay.classList.add("ed-top");
+  if (h > window.innerHeight * 1.2) overlay.classList.add("ed-top");
 
   // Stop the site from reacting to clicks on our overlay (likes, opening posts)
   ["click", "mousedown", "mouseup", "pointerdown", "pointerup", "dblclick"]
     .forEach((evt) => overlay.addEventListener(evt, (e) => e.stopPropagation()));
+  // Covered tiles are links: clicking the cover shouldn't open the post
+  overlay.addEventListener("click", (e) => {
+    if (!e.target.closest("button")) e.preventDefault();
+  });
 
   const msg = document.createElement("p");
   msg.textContent = state === "checking" ? `Checking this ${THING}...` : MESSAGE;
@@ -359,10 +605,89 @@ function buildOverlay(article, state) {
       const text = postText.get(article);
       if (text) shown.add(text); // stays shown when you scroll back
       render(article, "shown");
+      rerenderAll(); // also uncovers other parts of the same post (like its caption box)
     });
     overlay.appendChild(btn);
+
+    // On TikTok's full-screen viewer, keep its close button and up/down
+    // arrows usable: put copies on the cover, in the same spots
+    if (article.dataset.edRole === "tt-open") addViewerControls(article, overlay);
   }
   return overlay;
+}
+
+// ---- 2b. TikTok viewer controls on the cover ----------------------------
+// TikTok's own buttons are hidden under the cover, so we place copies in the
+// same spots. Clicking a copy presses TikTok's real button. If a button
+// can't be found, a copy is placed in the usual spot and uses the keyboard
+// shortcut instead (Escape to close, arrow keys to move between posts).
+function findViewerControl(viewer, kind) {
+  const patterns = {
+    close: /close|exit|dismiss/i,
+    up: /arrow[-_ ]?(left|up)|previous|prev\b|\bup\b/i,
+    down: /arrow[-_ ]?(right|down)|next|\bdown\b/i,
+  };
+  const candidates = viewer.querySelectorAll("button, [role='button'], [data-e2e]");
+  for (const el of candidates) {
+    if (el.closest(".ed-overlay")) continue;
+    const label = [el.getAttribute("aria-label"), el.getAttribute("data-e2e"),
+      el.getAttribute("title")].filter(Boolean).join(" ");
+    if (!label || !patterns[kind].test(label)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.width > 140 || r.height > 140) continue; // a button, not a panel
+    return el;
+  }
+  return null;
+}
+
+function pressKey(key) {
+  const opts = { key, code: key, bubbles: true, cancelable: true };
+  document.dispatchEvent(new KeyboardEvent("keydown", opts));
+  document.dispatchEvent(new KeyboardEvent("keyup", opts));
+}
+
+function addViewerControls(viewer, overlay) {
+  const vr = viewer.getBoundingClientRect();
+  const specs = [
+    { kind: "close", icon: "✕", label: "Close", key: "Escape",
+      fallback: { left: 24, top: 24 } },
+    { kind: "up", icon: "︿", label: "Previous post", key: "ArrowUp",
+      fallback: { right: 24, top: vr.height / 2 - 70 } },
+    { kind: "down", icon: "﹀", label: "Next post", key: "ArrowDown",
+      fallback: { right: 24, top: vr.height / 2 + 14 } },
+  ];
+  specs.forEach((spec) => {
+    const real = findViewerControl(viewer, spec.kind);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ed-proxy";
+    btn.textContent = spec.icon;
+    btn.setAttribute("aria-label", spec.label);
+    btn.title = spec.label;
+    if (real) {
+      const r = real.getBoundingClientRect();
+      btn.style.left = `${r.left - vr.left}px`;
+      btn.style.top = `${r.top - vr.top}px`;
+      btn.style.width = `${Math.max(r.width, 40)}px`;
+      btn.style.height = `${Math.max(r.height, 40)}px`;
+    } else {
+      Object.entries(spec.fallback).forEach(([k, v]) => { btn.style[k] = `${v}px`; });
+    }
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const target = findViewerControl(viewer, spec.kind) || real;
+      if (target) target.click();
+      else {
+        pressKey(spec.key);
+        // If Escape didn't close the viewer, go back a page instead
+        if (spec.kind === "close") {
+          setTimeout(() => { if (viewer.isConnected && document.contains(viewer)) history.back(); }, 300);
+        }
+      }
+    });
+    overlay.appendChild(btn);
+  });
 }
 
 function rerenderAll() {
@@ -375,8 +700,18 @@ function rerenderAll() {
 
 // ---- 3. Check one post --------------------------------------------------
 function checkPost(article) {
-  const { text, imageText, comments } = getPostText(article);
-  if (!text) return; // text may not have loaded yet; try again later
+  const { text, imageText, comments, needCaption } = getPostText(article);
+  if (!text) {
+    // Instagram grid tile with no text yet: load its caption if it's near
+    // the screen, and keep it covered while loading
+    if (needCaption && nearScreen(article)) {
+      requestCaption(needCaption);
+      if (HIDE_WHILE_CHECKING) render(article, "checking");
+    } else if (!needCaption && article.getAttribute("data-ed-state") === "checking") {
+      render(article, "safe"); // caption loaded but empty: nothing to check
+    }
+    return; // text may not have loaded yet; try again later
+  }
   postText.set(article, text);
 
   const state = decide(text);
@@ -385,15 +720,15 @@ function checkPost(article) {
     return;
   }
 
-  // YouTube and TikTok preload far more than is on screen. Only check what's on
+  // YouTube, TikTok, and grids preload far more than is on screen. Only check what's on
   // screen or about to scroll in; the rest is checked when it gets close.
-  if (IS_VIDEO_SITE && !nearScreen(article)) return;
+  if ((IS_VIDEO_SITE || article.dataset.edRole === "ig-tile") && !nearScreen(article)) return;
 
   pending.add(text);
   render(article, decide(text));
 
   // Score the caption, and the comments separately (if any).
-  Promise.all([ask(text), comments && COMMENT_WEIGHT > 0 ? ask(comments) : Promise.resolve(null)])
+  Promise.all([ask(text, article), comments && COMMENT_WEIGHT > 0 ? ask(comments, article) : Promise.resolve(null)])
     .then(([cap, com]) => {
       pending.delete(text);
       if (!cap) {
@@ -427,50 +762,93 @@ function checkPost(article) {
 }
 
 // Ask the server for both scores. Always includes the diet score, so the
-// strict switch and the slider can change what's blurred instantly.
-// At most 3 requests at a time, in page order (top of the screen first),
-// so what you're looking at isn't stuck behind a long line.
-// If the server takes more than 8 seconds, give up and show the post.
-const MAX_AT_ONCE = 3;
-const TIMEOUT_MS = 8000;
+// strict switch can change what's blurred instantly.
+//
+// Captions waiting to be checked are collected for a moment and sent
+// together in batches of up to 12 (the server scores a batch in one pass,
+// much faster than one by one). What's on screen goes first, then what's
+// just below. At most 2 batches at a time. If the server takes more than
+// 4 seconds, give up and show the posts.
+const BATCH_SIZE = 12;
+const MAX_AT_ONCE = 2;
+const TIMEOUT_MS = 4000;
 const queue = [];
 let running = 0;
+let useBatch = true;   // switches off if the server is an older version
+let pumpQueued = false;
 
-function ask(text) {
+function ask(text, el) {
   return new Promise((resolve) => {
-    queue.push({ text, resolve });
-    pump();
+    queue.push({ text, el, resolve });
+    if (!pumpQueued) {
+      pumpQueued = true;
+      setTimeout(() => { pumpQueued = false; pump(); }, 30); // collect a batch
+    }
   });
+}
+
+// How urgent: 0 = on screen, bigger = further away
+function distance(el) {
+  if (!el || !el.isConnected) return 1e9;
+  const r = el.getBoundingClientRect();
+  const h = window.innerHeight || 800;
+  if (r.bottom > 0 && r.top < h) return 0;
+  return r.top >= h ? r.top - h : -r.bottom;
 }
 
 function pump() {
   while (running < MAX_AT_ONCE && queue.length) {
-    const { text, resolve } = queue.shift();
+    queue.sort((a, b) => distance(a.el) - distance(b.el));
+    const jobs = queue.splice(0, useBatch ? BATCH_SIZE : 1);
     running++;
     let done = false;
-    const finish = (res) => {
+    const finish = (results) => {
       if (done) return;
       done = true;
       running--;
-      resolve(res);
+      jobs.forEach((job, i) => job.resolve(results ? results[i] : null));
       pump();
     };
     const timer = setTimeout(() => {
-      console.warn("[Gentle Feed] server took too long, showing:", text.slice(0, 60));
+      console.warn(`[Gentle Feed] server took too long, showing ${jobs.length} post(s)`);
       finish(null);
     }, TIMEOUT_MS);
-    chrome.runtime.sendMessage(
-      { type: "classify", text, threshold: 0.4, strict: true },
-      (res) => {
-        clearTimeout(timer);
-        if (!res || !res.ok) {
-          console.warn("[Gentle Feed] server unreachable:", res && res.error);
-          finish(null);
-        } else {
-          finish(res);
+
+    if (useBatch) {
+      chrome.runtime.sendMessage(
+        { type: "classify_batch", texts: jobs.map((j) => j.text), threshold: 0.4, strict: true },
+        (res) => {
+          clearTimeout(timer);
+          if (res && res.ok && Array.isArray(res.results)) {
+            finish(res.results.map((r) => ({ ok: true, ...r })));
+          } else if (res && /no-batch/.test(res.error || "")) {
+            // Older server without batching: put these back, go one by one
+            console.warn("[Gentle Feed] server has no batch support; checking one at a time");
+            useBatch = false;
+            done = true;
+            running--;
+            queue.unshift(...jobs);
+            pump();
+          } else {
+            console.warn("[Gentle Feed] server unreachable:", res && res.error);
+            finish(null);
+          }
         }
-      }
-    );
+      );
+    } else {
+      chrome.runtime.sendMessage(
+        { type: "classify", text: jobs[0].text, threshold: 0.4, strict: true },
+        (res) => {
+          clearTimeout(timer);
+          if (!res || !res.ok) {
+            console.warn("[Gentle Feed] server unreachable:", res && res.error);
+            finish(null);
+          } else {
+            finish([res]);
+          }
+        }
+      );
+    }
   }
 }
 
@@ -486,7 +864,23 @@ function nearScreen(el) {
 // ---- 4. Scan the page, and rescan as posts load or get rebuilt ----------
 function scan() {
   if (!ready) return; // wait until settings are loaded
-  getItems().forEach(checkPost);
+  const items = getItems();
+  items.forEach(checkPost);
+  removeStaleCovers(items);
+}
+
+// If something we covered earlier is no longer a post we check (for
+// example, a viewer that closed or changed), take our cover off it.
+function removeStaleCovers(items) {
+  const current = new Set(items);
+  document.querySelectorAll("[data-ed-state]").forEach((el) => {
+    if (current.has(el)) return;
+    render(el, "safe"); // removes the cover and resumes a video we paused
+    el.removeAttribute("data-ed-state");
+    el.removeAttribute("data-ed-site");
+    el.removeAttribute("data-ed-pos");
+    delete el.dataset.edRole;
+  });
 }
 
 // Scrolling doesn't always change the page, so also rescan on scroll.
@@ -501,14 +895,15 @@ window.addEventListener("scroll", () => {
 }, { passive: true, capture: true });
 
 let scanQueued = false;
-const observer = new MutationObserver(() => {
-  if (scanQueued) return;   // group many DOM changes into one scan
+function queueScan() {
+  if (scanQueued) return;   // group many changes into one scan
   scanQueued = true;
   setTimeout(() => {
     scanQueued = false;
     scan();
   }, 50);
-});
+}
+const observer = new MutationObserver(queueScan);
 
 observer.observe(document.body, { childList: true, subtree: true });
 console.log("[Gentle Feed] running");
