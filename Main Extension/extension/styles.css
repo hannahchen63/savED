@@ -69,13 +69,13 @@
   padding-top: 160px;
 }
 
-/* YouTube: hide the video completely under a solid cover (videos and
+/* YouTube and TikTok: hide the video completely under a solid cover (videos and
    thumbnails show through a blur too easily there) */
-[data-ed-site="yt"][data-ed-state="checking"] > *:not(.ed-overlay),
-[data-ed-site="yt"][data-ed-state="blur"] > *:not(.ed-overlay) {
+[data-ed-site="video"][data-ed-state="checking"] > *:not(.ed-overlay),
+[data-ed-site="video"][data-ed-state="blur"] > *:not(.ed-overlay) {
   opacity: 0 !important;
 }
-[data-ed-site="yt"] > .ed-overlay {
+[data-ed-site="video"] > .ed-overlay {
   background: #f4f1ec;
   border-radius: 12px;
 }

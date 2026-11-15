@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Gentle Feed",
-  "version": "0.8.0",
-  "description": "Blurs Instagram posts and YouTube videos that may be triggering during eating disorder recovery. Prototype, not medical advice.",
+  "version": "0.9.3",
+  "description": "Blurs Instagram posts and YouTube and TikTok videos that may be triggering during eating disorder recovery. Prototype, not medical advice.",
   "permissions": [
     "storage"
   ],
@@ -20,7 +20,8 @@
     {
       "matches": [
         "https://www.instagram.com/*",
-        "https://www.youtube.com/*"
+        "https://www.youtube.com/*",
+        "https://www.tiktok.com/*"
       ],
       "js": [
         "content.js"

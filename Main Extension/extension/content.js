@@ -1,12 +1,14 @@
 // content.js
-// Runs on instagram.com and youtube.com. Finds each post or video, reads its
+// Runs on instagram.com, youtube.com, and tiktok.com. Finds each post or video, reads its
 // text, asks the server for scores, and blurs it if a score passes its cutoff.
 
 const HIDE_WHILE_CHECKING = true; // blur posts until the server answers (safer)
 const DEBUG = true;               // print scores in the console (F12 > Console)
 
 const IS_YOUTUBE = location.hostname.endsWith("youtube.com");
-const THING = IS_YOUTUBE ? "video" : "post";
+const IS_TIKTOK = location.hostname.endsWith("tiktok.com");
+const IS_VIDEO_SITE = IS_YOUTUBE || IS_TIKTOK;
+const THING = IS_VIDEO_SITE ? "video" : "post";
 const MESSAGE =
   `This ${THING} may include content about food, weight, or body image.`;
 
@@ -33,6 +35,21 @@ const DIET_PHRASES = new RegExp([
   "what i eat in a day",
 ].join("|"), "i");
 
+// Topic check for the eating disorder model. That model learned partly from
+// the casual style of the tweets it was trained on, so it can give very high
+// scores to short, emotional captions about anything (like hockey). It may
+// only blur a post that mentions something in its subject area.
+const ED_TOPIC = new RegExp([
+  "\\b(eat|eats|eating|ate|food|foods|meal|meals|snack\\w*|hungry|hunger|starv\\w*)\\b",
+  "\\b(fast|fasting|binge\\w*|purg\\w*|restrict\\w*|skip(ped|ping)?\\s+(meals?|breakfast|lunch|dinner))\\b",
+  "\\b(calor\\w*|cals?|kcals?|macros?|protein|carbs?|sugar|diet\\w*|keto)\\b",
+  "\\b(weigh\\w*|scale|lbs?|pounds|kg|bmi|fat|thin|thinner|skinny|body|bodies|size\\s*\\d+)\\b",
+  "\\b(waist|thighs?|thigh\\s*gap|bones?|ribs|collarbones?|hip\\s*bones?|stomach|belly)\\b",
+  "\\b(gym|workout|cardio|burn\\w*|exercis\\w*)\\b",
+  "\\b(ana|mia|ed|recovery|relapse|thinspo|meanspo|bonespo|proana|promia|edtwt|sweetspo)\\b",
+  "🦴",
+].join("|"), "i");
+
 function logSettings() {
   console.log(`[Gentle Feed] strict mode ${settings.strict ? "ON" : "OFF"} ` +
     `(cutoffs: ed ${edCutoff().toFixed(2)}, diet ${dietCutoff().toFixed(2)})`);
@@ -53,7 +70,7 @@ function decide(text) {
   if (pending.has(text)) return HIDE_WHILE_CHECKING ? "checking" : "safe";
   const s = scores.get(text);
   if (!s) return null;
-  const edHit = s.ed >= edCutoff();
+  const edHit = s.ed >= edCutoff() && s.topic !== false; // see ED_TOPIC
   const dietHit = settings.strict &&
     ((s.diet != null && s.diet >= dietCutoff()) || s.phrase);
   return edHit || dietHit ? "blur" : "safe";
@@ -158,7 +175,17 @@ function getYouTubeItems() {
   return [...cards, ...watch, ...shorts];
 }
 
-const clean = (el) => (el ? (el.textContent || "").replace(/[ \t]+/g, " ").trim() : "");
+// Read an element's text, leaving out our own cover's text if it's inside
+function clean(el) {
+  if (!el) return "";
+  let text = el.textContent || "";
+  if (el.querySelector(".ed-overlay")) {
+    const copy = el.cloneNode(true);
+    copy.querySelectorAll(".ed-overlay").forEach((o) => o.remove());
+    text = copy.textContent || "";
+  }
+  return text.replace(/[ \t]+/g, " ").trim();
+}
 
 function getYouTubeText(el) {
   // Watch page (both containers share the same title + description)
@@ -188,19 +215,71 @@ function getYouTubeText(el) {
   return [title, snippet].filter(Boolean).join("\n\n");
 }
 
+// ---- 1d. TikTok ----------------------------------------------------------
+// TikTok scrambles class names, but labels page parts with stable test tags
+// (data-e2e). We use those to find:
+// - videos in the For You / Following feed
+// - video tiles on search, explore, and profile pages
+// - the video open on its own page (or in the pop-up viewer)
+const TT_FEED = "[data-e2e='recommend-list-item-container']";
+const TT_TILES = [
+  "[data-e2e='search_top-item']", "[data-e2e='search_video-item']",
+  "[data-e2e='search-common-item']", "[data-e2e='explore-item']",
+  "[data-e2e='user-post-item']", "[data-e2e='user-liked-item']",
+  "[data-e2e='challenge-item']", "[data-e2e='music-item']",
+].join(",");
+const TT_DESC = "[data-e2e='video-desc'], [data-e2e='browse-video-desc'], " +
+  "[data-e2e='search-card-video-caption'], [data-e2e='search-card-desc'], " +
+  "[data-e2e='user-post-item-desc'], [data-e2e='explore-card-desc']";
+
+function getTikTokItems() {
+  const items = Array.from(document.querySelectorAll(`${TT_FEED}, ${TT_TILES}`))
+    .filter((el) => !(el.parentElement && el.parentElement.closest(`${TT_FEED}, ${TT_TILES}`)));
+
+  // A video open on its own page: cover both the player and the caption box
+  const desc = document.querySelector("[data-e2e='browse-video-desc']");
+  if (desc) {
+    const player = document.querySelector("[data-e2e='browse-video']") ||
+      document.querySelector("[class*='DivVideoContainer'], [class*='DivBrowserModeContainer'] video")?.closest("div");
+    [player, desc].forEach((el) => {
+      if (el && !items.includes(el)) {
+        el.dataset.edRole = "tt-open";
+        items.push(el);
+      }
+    });
+  }
+  return items;
+}
+
+function getTikTokText(el) {
+  // The open video: both parts share its caption
+  if (el.dataset.edRole === "tt-open") {
+    return clean(document.querySelector("[data-e2e='browse-video-desc']"));
+  }
+  const desc = clean(el.querySelector(TT_DESC));
+  if (desc) return desc;
+  // Grid tiles often carry the caption as the image's description
+  const img = el.querySelector("img[alt]");
+  return img ? (img.getAttribute("alt") || "").trim() : "";
+}
+
 // Everything on the page that should be checked
 function getItems() {
-  return IS_YOUTUBE
-    ? getYouTubeItems()
-    : Array.from(document.querySelectorAll("article"));
+  if (IS_YOUTUBE) return getYouTubeItems();
+  if (IS_TIKTOK) return getTikTokItems();
+  return Array.from(document.querySelectorAll("article"));
 }
 
 // The main text we check.
 // Instagram: caption plus any text found in the images.
 // YouTube: title plus description (or description snippet).
+// TikTok: the video's caption (with hashtags).
 function getPostText(article) {
   if (IS_YOUTUBE) {
     return { text: getYouTubeText(article).slice(0, 600), imageText: "", comments: "" };
+  }
+  if (IS_TIKTOK) {
+    return { text: getTikTokText(article).slice(0, 600), imageText: "", comments: "" };
   }
   const { caption, comments } = getCaptionAndComments(article);
   const imageText = getImageText(article);
@@ -231,8 +310,8 @@ function render(article, state) {
       if (p && p.catch) p.catch(() => {}); // browser may block autoplay; ignore
     }
   });
-  if (IS_YOUTUBE && !article.hasAttribute("data-ed-site")) {
-    article.setAttribute("data-ed-site", "yt");
+  if (IS_VIDEO_SITE && !article.hasAttribute("data-ed-site")) {
+    article.setAttribute("data-ed-site", "video");
   }
   if (article.getAttribute("data-ed-state") !== state) {
     article.setAttribute("data-ed-state", state);
@@ -306,9 +385,9 @@ function checkPost(article) {
     return;
   }
 
-  // YouTube preloads far more than is on screen. Only check what's on
+  // YouTube and TikTok preload far more than is on screen. Only check what's on
   // screen or about to scroll in; the rest is checked when it gets close.
-  if (IS_YOUTUBE && !nearScreen(article)) return;
+  if (IS_VIDEO_SITE && !nearScreen(article)) return;
 
   pending.add(text);
   render(article, decide(text));
@@ -333,12 +412,13 @@ function checkPost(article) {
         comEd: com ? com.ed_score : null, comDiet: com ? com.diet_score : null,
       };
       final.phrase = DIET_PHRASES.test(text);
+      final.topic = ED_TOPIC.test(text);
       scores.set(text, final);
       if (DEBUG) {
         const f = (x) => (x == null ? "n/a" : x.toFixed(2));
         const comPart = COMMENT_WEIGHT > 0
           ? ` (comments ed=${f(final.comEd)} diet=${f(final.comDiet)} x${COMMENT_WEIGHT})` : "";
-        console.log(`[Gentle Feed] ed=${f(final.ed)} diet=${f(final.diet)}${final.phrase ? " +phrase" : ""} -> ${decide(text)}${comPart}`,
+        console.log(`[Gentle Feed] ed=${f(final.ed)} diet=${f(final.diet)}${final.phrase ? " +phrase" : ""}${final.topic ? "" : " (no ED topic)"} -> ${decide(text)}${comPart}`,
           text.slice(0, 80));
         if (imageText) console.log(`[Gentle Feed]   image text: "${imageText.slice(0, 120)}"`);
       }
