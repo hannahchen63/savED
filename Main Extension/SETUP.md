@@ -35,7 +35,7 @@ then refresh Instagram.
 ## Testing without Instagram
 
 ```
-curl -X POST http://localhost:5000/classify -H "Content-Type: application/json" -d "{\"text\": \"high protein breakfast, 300 calories\"}"
+curl -X POST http://localhost:5001/classify -H "Content-Type: application/json" -d "{\"text\": \"high protein breakfast, 300 calories\"}"
 ```
 
 ## Files
