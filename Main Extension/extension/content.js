@@ -21,6 +21,18 @@ const DIET_CUTOFF = 0.50; // diet model (only in strict mode)
 function edCutoff()   { return ED_CUTOFF; }
 function dietCutoff() { return DIET_CUTOFF; }
 
+// Safety net for strict mode: unmistakable diet phrases always blur, even if
+// the diet model scores the post a little under its cutoff.
+const DIET_PHRASES = new RegExp([
+  "low[- ]?cal(orie)?s?\\b",          // low calorie, low-cal, lowcal
+  "\\b\\d+\\s*(k?cals?|calories?)\\b", // 19 calorie, 300 cals, 80 kcal
+  "\\bfat[- ]?loss",                   // fat loss, #fatlossrecipes
+  "\\bweight[- ]?loss",                // weight loss, #weightlossrecipe
+  "\\blos(e|ing|t) (weight|fat|\\d+ ?(lbs?|pounds|kg))",
+  "calorie deficit",
+  "what i eat in a day",
+].join("|"), "i");
+
 function logSettings() {
   console.log(`[Gentle Feed] strict mode ${settings.strict ? "ON" : "OFF"} ` +
     `(cutoffs: ed ${edCutoff().toFixed(2)}, diet ${dietCutoff().toFixed(2)})`);
@@ -33,6 +45,7 @@ const scores = new Map();          // text -> { ed, diet }
 const pending = new Set();         // texts waiting for the server
 const shown = new Set();           // texts the user chose to "Show anyway"
 const postText = new WeakMap();    // post element -> its text
+const pausedByUs = new WeakSet();  // videos the extension paused (to resume later)
 
 // What should this post look like right now?
 function decide(text) {
@@ -41,7 +54,8 @@ function decide(text) {
   const s = scores.get(text);
   if (!s) return null;
   const edHit = s.ed >= edCutoff();
-  const dietHit = settings.strict && s.diet != null && s.diet >= dietCutoff();
+  const dietHit = settings.strict &&
+    ((s.diet != null && s.diet >= dietCutoff()) || s.phrase);
   return edHit || dietHit ? "blur" : "safe";
 }
 
@@ -165,7 +179,12 @@ function getYouTubeText(el) {
   const title = clean(el.querySelector("#video-title")) ||
     (titleLink && titleLink.getAttribute("title")) ||
     clean(el.querySelector("h3"));
-  const snippet = clean(el.querySelector(".metadata-snippet-text, #description-text"));
+  // Description preview (search results). YouTube has used several layouts,
+  // so try each known spot and anything whose class mentions "snippet".
+  const snippetEl = el.querySelector(
+    ".metadata-snippet-text, .metadata-snippet-container, #description-text, " +
+    "[class*='metadata-snippet'], [class*='snippet-text'], [class*='description-snippet']");
+  const snippet = clean(snippetEl).replace(/(…|\.\.\.)$/, "").trim();
   return [title, snippet].filter(Boolean).join("\n\n");
 }
 
@@ -197,9 +216,23 @@ function getPostText(article) {
 // We use a data attribute (not a class) because Instagram's code
 // overwrites class names when it re-renders.
 function render(article, state) {
-  // Pause any video inside something we're hiding (YouTube autoplays)
-  if (state === "checking" || state === "blur") {
-    article.querySelectorAll("video").forEach((v) => { if (!v.paused) v.pause(); });
+  // Pause any video inside something we've blurred (YouTube autoplays), and
+  // press play again if the user chooses "Show anyway". Videos are NOT
+  // paused while checking: that confused YouTube's shared Shorts player.
+  // Only videos WE paused get resumed, never ones the user paused.
+  const hiding = state === "blur";
+  article.querySelectorAll("video").forEach((v) => {
+    if (hiding && !v.paused) {
+      v.pause();
+      pausedByUs.add(v);
+    } else if (!hiding && pausedByUs.has(v)) {
+      pausedByUs.delete(v);
+      const p = v.play();
+      if (p && p.catch) p.catch(() => {}); // browser may block autoplay; ignore
+    }
+  });
+  if (IS_YOUTUBE && !article.hasAttribute("data-ed-site")) {
+    article.setAttribute("data-ed-site", "yt");
   }
   if (article.getAttribute("data-ed-state") !== state) {
     article.setAttribute("data-ed-state", state);
@@ -273,6 +306,10 @@ function checkPost(article) {
     return;
   }
 
+  // YouTube preloads far more than is on screen. Only check what's on
+  // screen or about to scroll in; the rest is checked when it gets close.
+  if (IS_YOUTUBE && !nearScreen(article)) return;
+
   pending.add(text);
   render(article, decide(text));
 
@@ -295,12 +332,13 @@ function checkPost(article) {
         capEd: cap.ed_score, capDiet: cap.diet_score,
         comEd: com ? com.ed_score : null, comDiet: com ? com.diet_score : null,
       };
+      final.phrase = DIET_PHRASES.test(text);
       scores.set(text, final);
       if (DEBUG) {
         const f = (x) => (x == null ? "n/a" : x.toFixed(2));
         const comPart = COMMENT_WEIGHT > 0
           ? ` (comments ed=${f(final.comEd)} diet=${f(final.comDiet)} x${COMMENT_WEIGHT})` : "";
-        console.log(`[Gentle Feed] ed=${f(final.ed)} diet=${f(final.diet)} -> ${decide(text)}${comPart}`,
+        console.log(`[Gentle Feed] ed=${f(final.ed)} diet=${f(final.diet)}${final.phrase ? " +phrase" : ""} -> ${decide(text)}${comPart}`,
           text.slice(0, 80));
         if (imageText) console.log(`[Gentle Feed]   image text: "${imageText.slice(0, 120)}"`);
       }
@@ -310,20 +348,59 @@ function checkPost(article) {
 
 // Ask the server for both scores. Always includes the diet score, so the
 // strict switch and the slider can change what's blurred instantly.
+// At most 3 requests at a time, in page order (top of the screen first),
+// so what you're looking at isn't stuck behind a long line.
+// If the server takes more than 8 seconds, give up and show the post.
+const MAX_AT_ONCE = 3;
+const TIMEOUT_MS = 8000;
+const queue = [];
+let running = 0;
+
 function ask(text) {
   return new Promise((resolve) => {
+    queue.push({ text, resolve });
+    pump();
+  });
+}
+
+function pump() {
+  while (running < MAX_AT_ONCE && queue.length) {
+    const { text, resolve } = queue.shift();
+    running++;
+    let done = false;
+    const finish = (res) => {
+      if (done) return;
+      done = true;
+      running--;
+      resolve(res);
+      pump();
+    };
+    const timer = setTimeout(() => {
+      console.warn("[Gentle Feed] server took too long, showing:", text.slice(0, 60));
+      finish(null);
+    }, TIMEOUT_MS);
     chrome.runtime.sendMessage(
       { type: "classify", text, threshold: 0.4, strict: true },
       (res) => {
+        clearTimeout(timer);
         if (!res || !res.ok) {
           console.warn("[Gentle Feed] server unreachable:", res && res.error);
-          resolve(null);
+          finish(null);
         } else {
-          resolve(res);
+          finish(res);
         }
       }
     );
-  });
+  }
+}
+
+// On screen, or within one screen above / two screens below.
+// Hidden things (other YouTube pages kept in the background) have no size.
+function nearScreen(el) {
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) return false;
+  const h = window.innerHeight || 800;
+  return r.bottom > -h && r.top < 2 * h;
 }
 
 // ---- 4. Scan the page, and rescan as posts load or get rebuilt ----------
@@ -331,6 +408,17 @@ function scan() {
   if (!ready) return; // wait until settings are loaded
   getItems().forEach(checkPost);
 }
+
+// Scrolling doesn't always change the page, so also rescan on scroll.
+let scrollQueued = false;
+window.addEventListener("scroll", () => {
+  if (scrollQueued) return;
+  scrollQueued = true;
+  setTimeout(() => {
+    scrollQueued = false;
+    scan();
+  }, 150);
+}, { passive: true, capture: true });
 
 let scanQueued = false;
 const observer = new MutationObserver(() => {
