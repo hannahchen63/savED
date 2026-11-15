@@ -2,7 +2,7 @@
 // Talks to the local Flask server. The request is made here (not in content.js)
 // because Chrome blocks Instagram's page from calling localhost directly.
 
-const SERVER_URL = "http://localhost:5000/classify";
+const SERVER_URL = "http://localhost:5001/classify";
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type !== "classify") return;
