@@ -10,3 +10,5 @@ venv/
 
 # OS
 .DS_Store
+
+server/diet_model/
