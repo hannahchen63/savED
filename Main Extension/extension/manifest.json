@@ -1,10 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Gentle Feed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Blurs Instagram posts that may be triggering during eating disorder recovery. Prototype, not medical advice.",
-  "permissions": [],
+  "permissions": ["storage"],
   "host_permissions": ["http://localhost:5001/*"],
+  "action": {
+    "default_title": "Gentle Feed",
+    "default_popup": "popup.html"
+  },
   "background": {
     "service_worker": "background.js"
   },

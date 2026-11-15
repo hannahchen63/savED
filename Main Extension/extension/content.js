@@ -16,6 +16,26 @@ const MESSAGE =
 const results = new Map();          // caption -> state
 const postCaption = new WeakMap();  // post element -> caption
 
+// Strict mode (layer 2) is switched on/off from the extension's popup.
+let strictMode = true;
+let ready = false;
+
+chrome.storage.sync.get({ strict: true }, (saved) => {
+  strictMode = saved.strict;
+  ready = true;
+  console.log(`[Gentle Feed] strict mode ${strictMode ? "ON" : "OFF"}`);
+  scan();
+});
+
+// When the switch is flipped, forget old results and recheck every post.
+chrome.storage.onChanged.addListener((changes) => {
+  if (!changes.strict) return;
+  strictMode = changes.strict.newValue;
+  console.log(`[Gentle Feed] strict mode ${strictMode ? "ON" : "OFF"}`);
+  results.clear();
+  scan();
+});
+
 // ---- 1. Find the caption inside a post ----------------------------------
 // Instagram's class names are scrambled, so we don't use them.
 // The caption is usually the longest piece of text inside the post.
@@ -102,8 +122,9 @@ function checkPost(article) {
   render(article, HIDE_WHILE_CHECKING ? "checking" : "safe");
 
   chrome.runtime.sendMessage(
-    { type: "classify", text: caption, threshold: THRESHOLD },
+    { type: "classify", text: caption, threshold: THRESHOLD, strict: strictMode },
     (res) => {
+      if (results.get(caption) !== "checking") return; // switch flipped meanwhile
       if (!res || !res.ok) {
         // Server not running or crashed: show the post and warn in the console.
         console.warn("[Gentle Feed] server unreachable:", res && res.error);
@@ -112,7 +133,10 @@ function checkPost(article) {
         return;
       }
       if (DEBUG) {
-        console.log(`[Gentle Feed] score=${res.score.toFixed(2)} blur=${res.blur}`,
+        const diet = res.diet_score == null ? "off" : res.diet_score.toFixed(2);
+        console.log(
+          `[Gentle Feed] ed=${res.ed_score.toFixed(2)} diet=${diet} ` +
+          `blur=${res.blur}${res.reason ? " (" + res.reason + ")" : ""}`,
           caption.slice(0, 80));
       }
       const state = res.blur ? "blur" : "safe";
@@ -124,6 +148,7 @@ function checkPost(article) {
 
 // ---- 4. Scan the page, and rescan as posts load or get rebuilt ----------
 function scan() {
+  if (!ready) return; // wait until we know if strict mode is on
   document.querySelectorAll("article").forEach(checkPost);
 }
 

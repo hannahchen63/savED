@@ -10,10 +10,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   fetch(SERVER_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: msg.text, threshold: msg.threshold })
+    body: JSON.stringify({ text: msg.text, threshold: msg.threshold, strict: msg.strict })
   })
     .then((res) => res.json())
-    .then((data) => sendResponse({ ok: true, blur: data.blur, score: data.score }))
+    .then((data) => sendResponse({ ok: true, ...data }))
     .catch((err) => sendResponse({ ok: false, error: String(err) }));
 
   return true; // keeps the message channel open for the async reply
