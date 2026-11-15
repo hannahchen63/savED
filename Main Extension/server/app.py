@@ -103,15 +103,79 @@ def _find_classifier():
     return obj, embedder_name
 
 
+def _load_sentence_folder_directly(folder):
+    """Rebuild a saved sentence-transformers embedder using only transformers:
+    the base model, then the pooling step (1_Pooling), then normalizing
+    (2_Normalize) if it's there. Gives the same numbers as the library."""
+    import json
+
+    import torch
+    from transformers import AutoModel, AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(folder)
+    enc = AutoModel.from_pretrained(folder)
+    enc.eval()
+
+    max_len = 256
+    cfg_path = os.path.join(folder, "sentence_bert_config.json")
+    if os.path.isfile(cfg_path):
+        with open(cfg_path) as f:
+            max_len = json.load(f).get("max_seq_length", max_len) or max_len
+
+    pooling = "mean"
+    normalize = False
+    for sub in sorted(os.listdir(folder)):
+        sub_path = os.path.join(folder, sub)
+        if not os.path.isdir(sub_path):
+            continue
+        if sub.endswith("Pooling") and os.path.isfile(os.path.join(sub_path, "config.json")):
+            with open(os.path.join(sub_path, "config.json")) as f:
+                pc = json.load(f)
+            if pc.get("pooling_mode_cls_token"):
+                pooling = "cls"
+            elif pc.get("pooling_mode_max_tokens"):
+                pooling = "max"
+            elif pc.get("pooling_mode") in ("cls", "max", "mean"):
+                pooling = pc["pooling_mode"]
+        if sub.endswith("Normalize"):
+            normalize = True
+
+    def embed(text):
+        inputs = tok(text, truncation=True, max_length=max_len, return_tensors="pt")
+        with torch.no_grad():
+            out = enc(**inputs).last_hidden_state
+        mask = inputs["attention_mask"].unsqueeze(-1).float()
+        if pooling == "cls":
+            vec = out[:, 0]
+        elif pooling == "max":
+            vec = out.masked_fill(mask == 0, -1e9).max(1).values
+        else:
+            vec = (out * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+        if normalize:
+            vec = torch.nn.functional.normalize(vec, p=2, dim=1)
+        return vec[0].numpy()
+
+    print(f"[layer 2] Embedder: {os.path.relpath(folder, HERE)} loaded directly "
+          f"({pooling} pooling{', normalized' if normalize else ''})")
+    return embed
+
+
 def _find_embedder(name_hint):
     # 1. A saved sentence-transformers folder has a modules.json file
     for path in glob.glob(os.path.join(DIET_DIR, "**", "modules.json"), recursive=True):
-        from sentence_transformers import SentenceTransformer
-
         folder = os.path.dirname(path)
-        st = SentenceTransformer(folder)
-        print(f"[layer 2] Embedder: sentence-transformers folder {os.path.relpath(folder, HERE)}")
-        return lambda text: st.encode([text])[0]
+        try:
+            from sentence_transformers import SentenceTransformer
+
+            st = SentenceTransformer(folder)
+            print(f"[layer 2] Embedder: sentence-transformers folder {os.path.relpath(folder, HERE)}")
+            return lambda text: st.encode([text])[0]
+        except Exception as e:
+            # Usually a version mismatch with the library. Load the same
+            # files directly with transformers instead.
+            print(f"[layer 2] sentence-transformers couldn't load it ({type(e).__name__}); "
+                  "loading the files directly instead")
+            return _load_sentence_folder_directly(folder)
 
     # 2. A saved Hugging Face model folder has a config.json file
     for path in glob.glob(os.path.join(DIET_DIR, "**", "config.json"), recursive=True):
