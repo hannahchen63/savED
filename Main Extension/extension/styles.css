@@ -1,12 +1,12 @@
-/* Posts being checked or flagged: blur everything except our overlay.
-   We use a data attribute because Instagram overwrites class names. */
-article[data-ed-state="checking"],
-article[data-ed-state="blur"] {
+/* Posts and videos being checked or flagged: blur everything except our
+   overlay. We use a data attribute because Instagram overwrites class names. */
+[data-ed-state="checking"],
+[data-ed-state="blur"] {
   position: relative !important;
 }
 
-article[data-ed-state="checking"] > *:not(.ed-overlay),
-article[data-ed-state="blur"] > *:not(.ed-overlay) {
+[data-ed-state="checking"] > *:not(.ed-overlay),
+[data-ed-state="blur"] > *:not(.ed-overlay) {
   filter: blur(40px) brightness(0.9) !important;
   pointer-events: none !important;
   user-select: none !important;
@@ -51,3 +51,20 @@ article[data-ed-state="blur"] > *:not(.ed-overlay) {
   background: #f0f0f0;
 }
 
+
+/* Small cards (YouTube sidebar): compact cover */
+.ed-overlay.ed-small {
+  gap: 6px;
+  padding: 8px;
+  font-size: 12px;
+}
+.ed-overlay.ed-small .ed-show-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+/* Very tall areas (YouTube watch page): message near the top */
+.ed-overlay.ed-top {
+  justify-content: flex-start;
+  padding-top: 160px;
+}

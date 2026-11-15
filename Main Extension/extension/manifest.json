@@ -1,10 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Gentle Feed",
-  "version": "0.6.0",
-  "description": "Blurs Instagram posts that may be triggering during eating disorder recovery. Prototype, not medical advice.",
-  "permissions": ["storage"],
-  "host_permissions": ["http://localhost:5001/*"],
+  "version": "0.7.0",
+  "description": "Blurs Instagram posts and YouTube videos that may be triggering during eating disorder recovery. Prototype, not medical advice.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost:5001/*"
+  ],
   "action": {
     "default_title": "Gentle Feed",
     "default_popup": "popup.html"
@@ -14,9 +18,16 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.instagram.com/*"],
-      "js": ["content.js"],
-      "css": ["styles.css"],
+      "matches": [
+        "https://www.instagram.com/*",
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
       "run_at": "document_idle"
     }
   ]

@@ -1,12 +1,14 @@
 // content.js
-// Runs on instagram.com. Finds each post, reads its text, asks the server for
-// scores, and blurs the post if a score passes its cutoff.
+// Runs on instagram.com and youtube.com. Finds each post or video, reads its
+// text, asks the server for scores, and blurs it if a score passes its cutoff.
 
 const HIDE_WHILE_CHECKING = true; // blur posts until the server answers (safer)
 const DEBUG = true;               // print scores in the console (F12 > Console)
 
+const IS_YOUTUBE = location.hostname.endsWith("youtube.com");
+const THING = IS_YOUTUBE ? "video" : "post";
 const MESSAGE =
-  "This post may include content about food, weight, or body image.";
+  `This ${THING} may include content about food, weight, or body image.`;
 
 // ---- Settings from the popup ---------------------------------------------
 // strict: layer 2 (diet posts) on or off
@@ -110,9 +112,77 @@ function getImageText(article) {
   return found.join(" ").slice(0, 300);
 }
 
-// The main text we check: caption plus any text found in the images.
-// Comments are kept apart and count for very little.
+// ---- 1c. YouTube ---------------------------------------------------------
+// YouTube's page parts have stable names, so we can find them directly:
+// - video cards on the home page, search results, sidebar, and Shorts shelf
+// - the video being watched (title + description)
+// - the Short being watched
+const YT_CARDS = [
+  "ytd-rich-item-renderer", "ytd-video-renderer", "ytd-compact-video-renderer",
+  "ytd-grid-video-renderer", "ytd-playlist-video-renderer", "ytd-reel-item-renderer",
+  "yt-lockup-view-model", "ytm-shorts-lockup-view-model", "ytm-shorts-lockup-view-model-v2",
+].join(",");
+const YT_SHORT = "ytd-reel-video-renderer";
+
+function getYouTubeItems() {
+  // Cards (outermost only, since some card types sit inside others)
+  const cards = Array.from(document.querySelectorAll(YT_CARDS))
+    .filter((el) => !(el.parentElement && el.parentElement.closest(YT_CARDS)));
+
+  // Watch page: the player, title, and description column. In theater mode
+  // the player moves to a separate container, so we blur that too.
+  const watch = [];
+  const flexy = document.querySelector("ytd-watch-flexy:not([hidden])");
+  if (flexy) {
+    const primary = flexy.querySelector("#primary-inner");
+    if (primary) watch.push(primary);
+    const bleed = flexy.querySelector("#full-bleed-container");
+    if (bleed && bleed.querySelector("video")) watch.push(bleed);
+  }
+
+  const shorts = Array.from(document.querySelectorAll(YT_SHORT));
+  return [...cards, ...watch, ...shorts];
+}
+
+const clean = (el) => (el ? (el.textContent || "").replace(/[ \t]+/g, " ").trim() : "");
+
+function getYouTubeText(el) {
+  // Watch page (both containers share the same title + description)
+  if (el.matches("#primary-inner, #full-bleed-container")) {
+    const meta = document.querySelector("ytd-watch-flexy:not([hidden]) ytd-watch-metadata");
+    if (!meta) return "";
+    const title = clean(meta.querySelector("#title h1, h1"));
+    const desc = clean(meta.querySelector("#description-inline-expander, #description"))
+      .replace(/(…|\.\.\.)\s*more$/i, "");
+    return [title, desc].filter(Boolean).join("\n\n");
+  }
+  // A Short being watched
+  if (el.matches(YT_SHORT)) {
+    return clean(el.querySelector("h2, yt-shorts-video-title-view-model, .title"));
+  }
+  // A video card: title, plus the description snippet in search results
+  const titleLink = el.querySelector("#video-title-link, a#video-title, a[title]");
+  const title = clean(el.querySelector("#video-title")) ||
+    (titleLink && titleLink.getAttribute("title")) ||
+    clean(el.querySelector("h3"));
+  const snippet = clean(el.querySelector(".metadata-snippet-text, #description-text"));
+  return [title, snippet].filter(Boolean).join("\n\n");
+}
+
+// Everything on the page that should be checked
+function getItems() {
+  return IS_YOUTUBE
+    ? getYouTubeItems()
+    : Array.from(document.querySelectorAll("article"));
+}
+
+// The main text we check.
+// Instagram: caption plus any text found in the images.
+// YouTube: title plus description (or description snippet).
 function getPostText(article) {
+  if (IS_YOUTUBE) {
+    return { text: getYouTubeText(article).slice(0, 600), imageText: "", comments: "" };
+  }
   const { caption, comments } = getCaptionAndComments(article);
   const imageText = getImageText(article);
   return {
@@ -127,6 +197,10 @@ function getPostText(article) {
 // We use a data attribute (not a class) because Instagram's code
 // overwrites class names when it re-renders.
 function render(article, state) {
+  // Pause any video inside something we're hiding (YouTube autoplays)
+  if (state === "checking" || state === "blur") {
+    article.querySelectorAll("video").forEach((v) => { if (!v.paused) v.pause(); });
+  }
   if (article.getAttribute("data-ed-state") !== state) {
     article.setAttribute("data-ed-state", state);
   }
@@ -148,12 +222,18 @@ function buildOverlay(article, state) {
   overlay.className = "ed-overlay";
   overlay.dataset.kind = state;
 
-  // Stop Instagram from reacting to clicks on our overlay (likes, opening posts)
+  // Small cards (YouTube sidebar) get a compact cover; very tall areas
+  // (YouTube watch page) put the message near the top so it's visible.
+  const h = article.offsetHeight;
+  if (h && h < 170) overlay.classList.add("ed-small");
+  if (h > window.innerHeight * 0.9) overlay.classList.add("ed-top");
+
+  // Stop the site from reacting to clicks on our overlay (likes, opening posts)
   ["click", "mousedown", "mouseup", "pointerdown", "pointerup", "dblclick"]
     .forEach((evt) => overlay.addEventListener(evt, (e) => e.stopPropagation()));
 
   const msg = document.createElement("p");
-  msg.textContent = state === "checking" ? "Checking this post..." : MESSAGE;
+  msg.textContent = state === "checking" ? `Checking this ${THING}...` : MESSAGE;
   overlay.appendChild(msg);
 
   if (state === "blur") {
@@ -174,7 +254,7 @@ function buildOverlay(article, state) {
 }
 
 function rerenderAll() {
-  document.querySelectorAll("article").forEach((a) => {
+  getItems().forEach((a) => {
     const text = postText.get(a);
     const state = text && decide(text);
     if (state) render(a, state);
@@ -249,7 +329,7 @@ function ask(text) {
 // ---- 4. Scan the page, and rescan as posts load or get rebuilt ----------
 function scan() {
   if (!ready) return; // wait until settings are loaded
-  document.querySelectorAll("article").forEach(checkPost);
+  getItems().forEach(checkPost);
 }
 
 let scanQueued = false;
