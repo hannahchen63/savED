@@ -1,6 +1,6 @@
 // content.js
 // Runs on instagram.com. Finds each post, reads its text, asks the server for
-// scores, and blurs the post if the scores pass the user's sensitivity setting.
+// scores, and blurs the post if a score passes its cutoff.
 
 const HIDE_WHILE_CHECKING = true; // blur posts until the server answers (safer)
 const DEBUG = true;               // print scores in the console (F12 > Console)
@@ -9,31 +9,18 @@ const MESSAGE =
   "This post may include content about food, weight, or body image.";
 
 // ---- Settings from the popup ---------------------------------------------
-// strict:      layer 2 (diet posts) on or off
-// sensitivity: 0 to 100. Higher = blur more. 50 = the original cutoffs
-//              (0.4 for the eating disorder model, 0.5 for the diet model).
-let settings = { strict: true, sensitivity: 50 };
+// strict: layer 2 (diet posts) on or off
+let settings = { strict: true };
 let ready = false;
 
-// Cutoffs for each slider level (1 to 5). A post is blurred if a score is at
-// or above its cutoff. Levels 4 and 5 mostly lower the diet cutoff: lowering
-// the eating disorder cutoff too far blurred ordinary photos.
-const LEVELS = {
-  1: { ed: 0.60, diet: 0.74 },
-  2: { ed: 0.50, diet: 0.62 },
-  3: { ed: 0.40, diet: 0.50 }, // default
-  4: { ed: 0.40, diet: 0.44 },
-  5: { ed: 0.35, diet: 0.38 },
-};
-function level() {
-  return Math.min(5, Math.max(1, Math.round((settings.sensitivity - 10) / 20) + 1));
-}
-function edCutoff()   { return LEVELS[level()].ed; }
-function dietCutoff() { return LEVELS[level()].diet; }
+// A post is blurred if a score is at or above its cutoff.
+const ED_CUTOFF = 0.40;   // eating disorder model (always on)
+const DIET_CUTOFF = 0.50; // diet model (only in strict mode)
+function edCutoff()   { return ED_CUTOFF; }
+function dietCutoff() { return DIET_CUTOFF; }
 
 function logSettings() {
-  console.log(`[Gentle Feed] strict mode ${settings.strict ? "ON" : "OFF"}, level ${level()} ` +
-    "" +
+  console.log(`[Gentle Feed] strict mode ${settings.strict ? "ON" : "OFF"} ` +
     `(cutoffs: ed ${edCutoff().toFixed(2)}, diet ${dietCutoff().toFixed(2)})`);
 }
 
@@ -169,22 +156,6 @@ function buildOverlay(article, state) {
   msg.textContent = state === "checking" ? "Checking this post..." : MESSAGE;
   overlay.appendChild(msg);
 
-  // Testing aid: show why this post was blurred, right on the cover.
-  // Turn off for the final demo by setting DEBUG = false at the top.
-  if (DEBUG && state === "blur") {
-    const text = postText.get(article) || "";
-    const s = scores.get(text) || {};
-    const why = [];
-    if (s.ed != null && s.ed >= edCutoff()) why.push(`ed ${s.ed.toFixed(2)} ≥ ${edCutoff().toFixed(2)}`);
-    if (settings.strict && s.diet != null && s.diet >= dietCutoff()) {
-      why.push(`diet ${s.diet.toFixed(2)} ≥ ${dietCutoff().toFixed(2)}`);
-    }
-    const info = document.createElement("small");
-    info.className = "ed-debug";
-    info.textContent = `Why: ${why.join(", ") || "unknown"} | Caption read: "${text.slice(0, 140)}"`;
-    overlay.appendChild(info);
-  }
-
   if (state === "blur") {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -295,18 +266,17 @@ observer.observe(document.body, { childList: true, subtree: true });
 console.log("[Gentle Feed] running");
 
 // ---- 5. Load settings, then start ---------------------------------------
-chrome.storage.sync.get({ strict: true, sensitivity: 50 }, (saved) => {
-  settings = saved;
+chrome.storage.sync.get({ strict: true }, (saved) => {
+  settings.strict = saved.strict;
   ready = true;
   logSettings();
   scan();
 });
 
-// Settings changed in the popup: re-decide every post right away.
+// Strict mode switched in the popup: re-decide every post right away.
 // Scores are already saved, so no need to ask the server again.
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.strict) settings.strict = changes.strict.newValue;
-  if (changes.sensitivity) settings.sensitivity = changes.sensitivity.newValue;
   logSettings();
   rerenderAll();
 });

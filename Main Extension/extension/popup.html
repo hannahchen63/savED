@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <style>
     body {
-      width: 280px;
+      width: 260px;
       margin: 0;
       padding: 16px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -12,40 +12,20 @@
       color: #333;
       background: #faf7f2;
     }
-    h1 { font-size: 16px; margin: 0 0 14px; }
-    h2 { font-size: 14px; margin: 0; }
-    .section { margin-bottom: 18px; }
-    label.toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; }
-    input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; }
-    .row { display: flex; justify-content: space-between; align-items: baseline; }
-    #level { font-weight: 600; color: #7a5c3e; }
-    input[type=range] { width: 100%; margin: 10px 0 4px; accent-color: #7a5c3e; cursor: pointer; }
-    .ends { display: flex; justify-content: space-between; font-size: 11px; color: #888; }
-    p { margin: 6px 0 0; color: #666; font-size: 12px; line-height: 1.4; }
-    .note { font-size: 11px; color: #999; }
+    h1 { font-size: 16px; margin: 0 0 12px; }
+    label { display: flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; }
+    input { width: 18px; height: 18px; cursor: pointer; }
+    p { margin: 8px 0 0; color: #666; font-size: 12px; line-height: 1.4; }
+    .note { margin-top: 14px; font-size: 11px; color: #999; }
   </style>
 </head>
 <body>
   <h1>Gentle Feed</h1>
-
-  <div class="section">
-    <div class="row">
-      <h2>Sensitivity</h2>
-      <span id="level">3</span>
-    </div>
-    <input type="range" id="sensitivity" min="1" max="5" step="1" value="3">
-    <div class="ends"><span>Fewer blurs</span><span>More blurs</span></div>
-    <p>Higher hides more posts, including some harmless ones.</p>
-  </div>
-
-  <div class="section">
-    <label class="toggle">
-      <input type="checkbox" id="strict">
-      Strict mode
-    </label>
-    <p>Also hides diet and weight-loss posts, like low-calorie recipes, not just posts that promote restriction.</p>
-  </div>
-
+  <label>
+    <input type="checkbox" id="strict">
+    Strict mode
+  </label>
+  <p>Also hides diet and weight-loss posts, like low-calorie recipes, not just posts that promote restriction.</p>
   <p class="note">This project is a prototype and is not medical advice.</p>
   <script src="popup.js"></script>
 </body>
