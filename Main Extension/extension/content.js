@@ -15,12 +15,25 @@ const MESSAGE =
 let settings = { strict: true, sensitivity: 50 };
 let ready = false;
 
-function edCutoff()   { return 0.7 - 0.006 * settings.sensitivity; } // 0.7 .. 0.1
-function dietCutoff() { return 0.8 - 0.006 * settings.sensitivity; } // 0.8 .. 0.2
+// Cutoffs for each slider level (1 to 5). A post is blurred if a score is at
+// or above its cutoff. Levels 4 and 5 mostly lower the diet cutoff: lowering
+// the eating disorder cutoff too far blurred ordinary photos.
+const LEVELS = {
+  1: { ed: 0.60, diet: 0.74 },
+  2: { ed: 0.50, diet: 0.62 },
+  3: { ed: 0.40, diet: 0.50 }, // default
+  4: { ed: 0.40, diet: 0.44 },
+  5: { ed: 0.35, diet: 0.38 },
+};
+function level() {
+  return Math.min(5, Math.max(1, Math.round((settings.sensitivity - 10) / 20) + 1));
+}
+function edCutoff()   { return LEVELS[level()].ed; }
+function dietCutoff() { return LEVELS[level()].diet; }
 
 function logSettings() {
-  console.log(`[Gentle Feed] strict mode ${settings.strict ? "ON" : "OFF"}, ` +
-    `sensitivity ${settings.sensitivity} ` +
+  console.log(`[Gentle Feed] strict mode ${settings.strict ? "ON" : "OFF"}, level ${level()} ` +
+    "" +
     `(cutoffs: ed ${edCutoff().toFixed(2)}, diet ${dietCutoff().toFixed(2)})`);
 }
 
