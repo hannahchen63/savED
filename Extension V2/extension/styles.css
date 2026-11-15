@@ -1,18 +1,21 @@
-/* Blur everything in the post except our overlay */
-article.ed-blurred {
+/* Posts being checked or flagged: blur everything except our overlay.
+   We use a data attribute because Instagram overwrites class names. */
+article[data-ed-state="checking"],
+article[data-ed-state="blur"] {
   position: relative !important;
 }
 
-article.ed-blurred > *:not(.ed-overlay) {
-  filter: blur(28px);
-  pointer-events: none;
-  user-select: none;
+article[data-ed-state="checking"] > *:not(.ed-overlay),
+article[data-ed-state="blur"] > *:not(.ed-overlay) {
+  filter: blur(40px) brightness(0.9) !important;
+  pointer-events: none !important;
+  user-select: none !important;
 }
 
 .ed-overlay {
   position: absolute;
   inset: 0;
-  z-index: 10;
+  z-index: 9999;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -20,11 +23,12 @@ article.ed-blurred > *:not(.ed-overlay) {
   gap: 14px;
   padding: 24px;
   text-align: center;
-  background: rgba(250, 247, 242, 0.75);
+  background: rgba(250, 247, 242, 0.95);
   color: #333;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 15px;
   line-height: 1.4;
+  pointer-events: auto;
 }
 
 .ed-overlay p {
@@ -40,6 +44,7 @@ article.ed-blurred > *:not(.ed-overlay) {
   color: #333;
   font-size: 14px;
   cursor: pointer;
+  pointer-events: auto;
 }
 
 .ed-show-btn:hover {
