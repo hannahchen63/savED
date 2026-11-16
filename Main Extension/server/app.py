@@ -100,6 +100,16 @@ def _load_sentence_folder_directly(folder):
 
     pooling = "mean"
     normalize = False
+    # The model's modules.json lists its steps. Read "Normalize" from there:
+    # its folder (2_Normalize) is empty, and GitHub drops empty folders, so
+    # checking for the folder alone would silently skip this step and give
+    # wrong scores on any computer that downloaded the project from GitHub.
+    modules_path = os.path.join(folder, "modules.json")
+    if os.path.isfile(modules_path):
+        with open(modules_path) as f:
+            for module in json.load(f):
+                if "normalize" in str(module.get("type", "")).lower():
+                    normalize = True
     for sub in sorted(os.listdir(folder)):
         sub_path = os.path.join(folder, sub)
         if not os.path.isdir(sub_path):
@@ -305,4 +315,16 @@ def classify_batch():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5001, debug=True)
+    print()
+    print("=" * 60)
+    if diet_clf is not None:
+        print("  savED is running. Leave this window open while you browse.")
+        print("  Next: load the extension in Chrome (see README), then open")
+        print("  Instagram, YouTube, or TikTok.")
+    else:
+        print("  WARNING: the diet model didn't load, so nothing will be blurred.")
+        print("  Check that server/diet_model/ exists (see the messages above).")
+    print("  To stop savED: close this window (or press Ctrl+C).")
+    print("=" * 60)
+    # debug=False: loads the model once (debug mode loaded it twice, slower)
+    app.run(host="127.0.0.1", port=5001, debug=False)

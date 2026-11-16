@@ -2,3 +2,6 @@ flask
 flask-cors
 torch
 transformers
+# the diet model's classifier was saved with this exact version
+scikit-learn==1.6.1
+joblib

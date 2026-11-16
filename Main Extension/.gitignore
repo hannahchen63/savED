@@ -1,12 +1,11 @@
-# Model is ~300 MB, too big for GitHub. Share via Google Drive.
-server/ed_model/
-*.zip
-
 # Python
 __pycache__/
 *.pyc
 venv/
 .venv/
 
-# OS
+# Zips (the extension zip goes on the Releases page, not in the code)
+*.zip
+
+# Mac
 .DS_Store
