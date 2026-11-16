@@ -1,15 +1,13 @@
 """
-Local server for the Gentle Feed extension.
+Local server for the extension.
 
-POST /classify  {"text": "...", "threshold": 0.4, "strict": true/false}
-  -> {"blur": true/false, "score": ..., "ed_score": ..., "diet_score": ...,
-      "reason": "ed" / "diet" / null, "mode": ...}
+POST /classify        {"text": "..."}
+POST /classify_batch  {"texts": ["...", "..."]}
+  -> {"blur": true/false, "score": ..., "diet_score": ..., "reason": "diet"/null}
 
-Layer 1 (always on): the eating disorder model in server/ed_model/
-    (or a keyword placeholder if that folder is missing).
-Layer 2 (strict mode, toggled in the extension popup): the diet-culture
-    model in server/diet_model/ (an embedder + a classifier). Catches
-    weight-loss and low-calorie posts that layer 1 treats as harmless recipes.
+One model: the diet-culture model in server/diet_model/ (an embedder + a
+classifier). It checks every post. (The earlier eating disorder model,
+"layer 1", has been removed and is not loaded.)
 """
 
 import glob
@@ -23,11 +21,9 @@ app = Flask(__name__)
 CORS(app)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ED_DIR = os.path.join(HERE, "ed_model")
 DIET_DIR = os.path.join(HERE, "diet_model")
 
-DEFAULT_THRESHOLD = 0.4   # layer 1 cutoff
-DIET_THRESHOLD = 0.5      # layer 2 cutoff
+DIET_THRESHOLD = 0.5      # blur at or above this diet score
 
 
 # Clean captions exactly the way the training data was cleaned.
@@ -54,48 +50,7 @@ def paragraphs(raw):
 
 
 # =========================================================================
-# Layer 1: eating disorder model
-# =========================================================================
-tokenizer = model = None
-if os.path.isdir(ED_DIR):
-    import torch
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(ED_DIR)
-    model = AutoModelForSequenceClassification.from_pretrained(ED_DIR)
-    model.eval()
-    print(f"[layer 1] Loaded model from {ED_DIR}")
-    print("[layer 1] Labels:", model.config.id2label, "(index 1 should be harmful)")
-else:
-    print("[layer 1] No ed_model/ folder found. Using keyword PLACEHOLDER.")
-
-
-def model_scores(texts):
-    """Layer 1 scores for many texts in one pass (much faster than one by one)."""
-    inputs = tokenizer(list(texts), truncation=True, max_length=128,
-                       padding=True, return_tensors="pt")
-    with torch.no_grad():
-        logits = model(**inputs).logits
-    return [float(x) for x in torch.softmax(logits, dim=-1)[:, 1]]
-
-
-def model_score(text):
-    return model_scores([text])[0]
-
-
-PLACEHOLDER_PHRASES = [
-    "thinspo", "pro ana", "meanspo", "goal weight", "skip meals",
-    "skipped meals", "fasting challenge", "calorie deficit",
-]
-
-
-def placeholder_score(text):
-    t = text.lower()
-    return 0.9 if any(p in t for p in PLACEHOLDER_PHRASES) else 0.1
-
-
-# =========================================================================
-# Layer 2: diet-culture model (strict mode)
+# The diet-culture model
 # Looks inside server/diet_model/ for:
 #   - a classifier saved with joblib (any .joblib or .pkl file)
 #   - an embedder that turns text into numbers: a saved
@@ -114,7 +69,7 @@ def _find_classifier():
     import joblib
 
     obj = joblib.load(files[0])
-    print(f"[layer 2] Classifier file: {os.path.relpath(files[0], HERE)}")
+    print(f"[diet model] Classifier file: {os.path.relpath(files[0], HERE)}")
     embedder_name = None
     if isinstance(obj, dict):  # some notebooks save {"clf": ..., "embedder": "name"}
         for k, v in obj.items():
@@ -177,7 +132,7 @@ def _load_sentence_folder_directly(folder):
             vec = torch.nn.functional.normalize(vec, p=2, dim=1)
         return vec.numpy()
 
-    print(f"[layer 2] Embedder: {os.path.relpath(folder, HERE)} loaded directly "
+    print(f"[diet model] Embedder: {os.path.relpath(folder, HERE)} loaded directly "
           f"({pooling} pooling{', normalized' if normalize else ''})")
     return embed
 
@@ -190,12 +145,12 @@ def _find_embedder(name_hint):
             from sentence_transformers import SentenceTransformer
 
             st = SentenceTransformer(folder)
-            print(f"[layer 2] Embedder: sentence-transformers folder {os.path.relpath(folder, HERE)}")
+            print(f"[diet model] Embedder: sentence-transformers folder {os.path.relpath(folder, HERE)}")
             return lambda texts: st.encode(list(texts))
         except Exception as e:
             # Usually a version mismatch with the library. Load the same
             # files directly with transformers instead.
-            print(f"[layer 2] sentence-transformers couldn't load it ({type(e).__name__}); "
+            print(f"[diet model] sentence-transformers couldn't load it ({type(e).__name__}); "
                   "loading the files directly instead")
             return _load_sentence_folder_directly(folder)
 
@@ -208,7 +163,7 @@ def _find_embedder(name_hint):
         tok = AutoTokenizer.from_pretrained(folder)
         enc = AutoModel.from_pretrained(folder)
         enc.eval()
-        print(f"[layer 2] Embedder: Hugging Face folder {os.path.relpath(folder, HERE)} (mean pooling)")
+        print(f"[diet model] Embedder: Hugging Face folder {os.path.relpath(folder, HERE)} (mean pooling)")
 
         def embed(texts):
             inputs = tok(list(texts), truncation=True, max_length=256,
@@ -232,7 +187,7 @@ def _find_embedder(name_hint):
         from sentence_transformers import SentenceTransformer
 
         st = SentenceTransformer(name)  # downloads once, then cached
-        print(f"[layer 2] Embedder: sentence-transformers model '{name}'")
+        print(f"[diet model] Embedder: sentence-transformers model '{name}'")
         return lambda texts: st.encode(list(texts))
 
     raise FileNotFoundError("could not find the embedder inside diet_model/")
@@ -265,7 +220,7 @@ if os.path.isdir(DIET_DIR):
     try:
         diet_clf, name_hint = _find_classifier()
         if hasattr(diet_clf, "steps"):
-            print("[layer 2] Classifier is a full pipeline (reads text directly)")
+            print("[diet model] Classifier is a full pipeline (reads text directly)")
         else:
             diet_embedder = _find_embedder(name_hint)
             expected = getattr(diet_clf, "n_features_in_", None)
@@ -273,16 +228,16 @@ if os.path.isdir(DIET_DIR):
             if expected and expected != got:
                 raise ValueError(f"embedder makes {got} numbers but classifier expects "
                                  f"{expected}. They don't match.")
-        print("[layer 2] Classes:", list(getattr(diet_clf, "classes_", [])), "(1 should be diet)")
+        print("[diet model] Classes:", list(getattr(diet_clf, "classes_", [])), "(1 should be diet)")
         test = "Low Calorie High Protein Cookie Dough 266 calories #fatlossrecipes"
-        print(f"[layer 2] Test score: {diet_score(test):.3f} (should be above 0.5)")
-        print("[layer 2] READY: strict mode is available")
+        print(f"[diet model] Test score: {diet_score(test):.3f} (should be above 0.5)")
+        print("[diet model] READY")
     except Exception as e:
-        print("[layer 2] FAILED to load diet_model/:", repr(e))
-        print("[layer 2] Strict mode will do nothing. Send this message for help.")
+        print("[diet model] FAILED to load diet_model/:", repr(e))
+        print("[diet model] Strict mode will do nothing. Send this message for help.")
         diet_clf = diet_embedder = None
 else:
-    print("[layer 2] No diet_model/ folder found. Strict mode will do nothing.")
+    print("[diet model] No diet_model/ folder found. Strict mode will do nothing.")
 
 
 # =========================================================================
@@ -292,31 +247,20 @@ else:
 def health():
     return jsonify({
         "ok": True,
-        "mode": "model" if model else "placeholder",
-        "strict_layer": "loaded" if diet_clf is not None else "missing",
+        "diet_model": "loaded" if diet_clf is not None else "missing",
     })
 
 
-def score_many(raws, strict, threshold):
-    """Score many captions together. Layer 1 runs once over all of them;
-    layer 2 runs once over all captions plus all their paragraphs."""
+def score_many(raws):
+    """Score many captions together: the diet model runs once over all
+    captions plus all their paragraphs. Each caption keeps its highest
+    score, so a diet line like "macros: 275 cal | 30g protein" isn't
+    drowned out by a long recipe."""
     texts = [clean(r) for r in raws]
     idx = [i for i, t in enumerate(texts) if t]
 
-    eds = {}
-    if idx:
-        if model:
-            for i, sc in zip(idx, model_scores([texts[i] for i in idx])):
-                eds[i] = sc
-        else:
-            for i in idx:
-                eds[i] = placeholder_score(texts[i])
-
-    # Layer 2 (only in strict mode). Scores the whole caption AND each
-    # paragraph on its own, and keeps the highest. A diet line like
-    # "macros: 275 cal | 30g protein" then isn't drowned out by a long recipe.
     diets = {}
-    if strict and diet_clf is not None and idx:
+    if diet_clf is not None and idx:
         pieces, owner = [], []
         for i in idx:
             for piece in [texts[i]] + paragraphs(raws[i]):
@@ -325,43 +269,28 @@ def score_many(raws, strict, threshold):
         for i, sc in zip(owner, diet_scores(pieces)):
             diets[i] = max(diets.get(i, 0.0), sc)
 
-    mode = "model" if model else "placeholder"
     results = []
     for i, t in enumerate(texts):
-        if not t:
-            results.append({"blur": False, "score": 0.0, "ed_score": 0.0,
-                            "diet_score": None, "reason": None, "mode": "empty"})
+        diet = diets.get(i)
+        if not t or diet is None:
+            results.append({"blur": False, "score": 0.0, "diet_score": diet,
+                            "reason": None, "mode": "empty" if not t else "no-model"})
             continue
-        ed, diet = eds[i], diets.get(i)
-        reason = None
-        if ed >= threshold:
-            reason = "ed"
-        elif diet is not None and diet >= DIET_THRESHOLD:
-            reason = "diet"
+        blur = diet >= DIET_THRESHOLD
         results.append({
-            "blur": reason is not None,
-            "score": round(max(ed, diet or 0.0), 4),
-            "ed_score": round(ed, 4),
-            "diet_score": None if diet is None else round(diet, 4),
-            "reason": reason,
-            "mode": mode,
+            "blur": blur,
+            "score": round(diet, 4),
+            "diet_score": round(diet, 4),
+            "reason": "diet" if blur else None,
+            "mode": "diet",
         })
     return results
-
-
-def _threshold(data):
-    try:
-        return float(data.get("threshold", DEFAULT_THRESHOLD))
-    except (TypeError, ValueError):
-        return DEFAULT_THRESHOLD
 
 
 @app.route("/classify", methods=["POST"])
 def classify():
     data = request.get_json(silent=True) or {}
-    raw = str(data.get("text", ""))
-    result = score_many([raw], bool(data.get("strict", False)), _threshold(data))[0]
-    return jsonify(result)
+    return jsonify(score_many([str(data.get("text", ""))])[0])
 
 
 # Many captions at once (the extension uses this: much faster on busy pages)
@@ -372,8 +301,7 @@ MAX_BATCH = 32
 def classify_batch():
     data = request.get_json(silent=True) or {}
     raws = [str(t) for t in (data.get("texts") or [])][:MAX_BATCH]
-    results = score_many(raws, bool(data.get("strict", False)), _threshold(data))
-    return jsonify({"results": results})
+    return jsonify({"results": score_many(raws)})
 
 
 if __name__ == "__main__":

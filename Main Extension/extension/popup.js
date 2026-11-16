@@ -1,13 +1,18 @@
 // popup.js
-// The strict mode switch. Saves the choice so it stays set.
-// The Instagram tab updates as soon as it changes.
+// The on/off switch for the whole extension. Saves the choice so it stays
+// set. Open pages update as soon as it changes.
 
-const box = document.getElementById("strict");
+const box = document.getElementById("enabled");
+const state = document.getElementById("state");
 
-chrome.storage.sync.get({ strict: true }, (saved) => {
-  box.checked = saved.strict;
-});
+function show(on) {
+  box.checked = on;
+  state.textContent = on ? "On" : "Off";
+}
+
+chrome.storage.sync.get({ enabled: true }, (saved) => show(saved.enabled));
 
 box.addEventListener("change", () => {
-  chrome.storage.sync.set({ strict: box.checked });
+  show(box.checked);
+  chrome.storage.sync.set({ enabled: box.checked });
 });

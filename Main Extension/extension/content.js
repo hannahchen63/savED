@@ -14,18 +14,17 @@ const MESSAGE =
   `This ${THING} may include content about food, weight, or body image.`;
 
 // ---- Settings from the popup ---------------------------------------------
-// strict: layer 2 (diet posts) on or off
-let settings = { strict: true };
+// enabled: the whole extension on or off
+let settings = { enabled: true };
 let ready = false;
 
-// A post is blurred if a score is at or above its cutoff.
-const ED_CUTOFF = 0.40;   // eating disorder model (always on)
-const DIET_CUTOFF = 0.50; // diet model (only in strict mode)
-function edCutoff()   { return ED_CUTOFF; }
+// One model: the diet model. A post is blurred if its score is at or above
+// this cutoff.
+const DIET_CUTOFF = 0.50;
 function dietCutoff() { return DIET_CUTOFF; }
 
-// Safety net for strict mode: unmistakable diet phrases always blur, even if
-// the diet model scores the post a little under its cutoff.
+// Safety net: unmistakable diet phrases always blur, even if the diet model
+// scores the post a little under its cutoff.
 const DIET_PHRASES = new RegExp([
   "low[- ]?cal(orie)?s?\\b",          // low calorie, low-cal, lowcal
   "\\b\\d+\\s*(k?cals?|calories?)\\b", // 19 calorie, 300 cals, 80 kcal
@@ -36,30 +35,15 @@ const DIET_PHRASES = new RegExp([
   "what i eat in a day",
 ].join("|"), "i");
 
-// Topic check for the eating disorder model. That model learned partly from
-// the casual style of the tweets it was trained on, so it can give very high
-// scores to short, emotional captions about anything (like hockey). It may
-// only blur a post that mentions something in its subject area.
-const ED_TOPIC = new RegExp([
-  "\\b(eat|eats|eating|ate|food|foods|meal|meals|snack\\w*|hungry|hunger|starv\\w*)\\b",
-  "\\b(fast|fasting|binge\\w*|purg\\w*|restrict\\w*|skip(ped|ping)?\\s+(meals?|breakfast|lunch|dinner))\\b",
-  "\\b(calor\\w*|cals?|kcals?|macros?|protein|carbs?|sugar|diet\\w*|keto)\\b",
-  "\\b(weigh\\w*|scale|lbs?|pounds|kg|bmi|fat|thin|thinner|skinny|body|bodies|size\\s*\\d+)\\b",
-  "\\b(waist|thighs?|thigh\\s*gap|bones?|ribs|collarbones?|hip\\s*bones?|stomach|belly)\\b",
-  "\\b(gym|workout|cardio|burn\\w*|exercis\\w*)\\b",
-  "\\b(ana|mia|ed|recovery|relapse|thinspo|meanspo|bonespo|proana|promia|edtwt|sweetspo)\\b",
-  "🦴",
-].join("|"), "i");
-
 function logSettings() {
-  console.log(`[Gentle Feed] strict mode ${settings.strict ? "ON" : "OFF"} ` +
-    `(cutoffs: ed ${edCutoff().toFixed(2)}, diet ${dietCutoff().toFixed(2)})`);
+  console.log(`[savED] ${settings.enabled ? "ON" : "OFF"} ` +
+    `(diet cutoff ${dietCutoff().toFixed(2)})`);
 }
 
 // ---- Memory -------------------------------------------------------------
 // Instagram deletes and rebuilds posts as you scroll, so we remember things
 // by the post's text, not by the post element.
-const scores = new Map();          // text -> { ed, diet }
+const scores = new Map();          // text -> { diet, phrase }
 const pending = new Set();         // texts waiting for the server
 const shown = new Set();           // texts the user chose to "Show anyway"
 const postText = new WeakMap();    // post element -> its text
@@ -71,10 +55,8 @@ function decide(text) {
   if (pending.has(text)) return HIDE_WHILE_CHECKING ? "checking" : "safe";
   const s = scores.get(text);
   if (!s) return null;
-  const edHit = s.ed >= edCutoff() && s.topic !== false; // see ED_TOPIC
-  const dietHit = settings.strict &&
-    ((s.diet != null && s.diet >= dietCutoff()) || s.phrase);
-  return edHit || dietHit ? "blur" : "safe";
+  const dietHit = (s.diet != null && s.diet >= dietCutoff()) || s.phrase;
+  return dietHit ? "blur" : "safe";
 }
 
 // ---- 1. Find the caption inside a post ----------------------------------
@@ -430,7 +412,7 @@ function pumpCaptions() {
       .then((html) => {
         const caption = captionFromPage(html);
         captionCache.set(code, caption);
-        if (DEBUG && !caption) console.log(`[Gentle Feed] no caption found for /p/${code}/`);
+        if (DEBUG && !caption) console.log(`[savED] no caption found for /p/${code}/`);
       })
       .catch(() => captionCache.set(code, ""))
       .finally(() => {
@@ -733,7 +715,7 @@ function checkPost(article) {
       pending.delete(text);
       if (!cap) {
         // Server not running or crashed: show the post and warn in the console.
-        scores.set(text, { ed: 0, diet: null });
+        scores.set(text, { diet: null, phrase: false });
         rerenderAll();
         return;
       }
@@ -741,28 +723,24 @@ function checkPost(article) {
       // A comment alone (at most 0.1) can never pass any cutoff.
       const add = (a, b) => (a == null ? null : Math.min(1, a + COMMENT_WEIGHT * (b || 0)));
       const final = {
-        ed: add(cap.ed_score, com && com.ed_score),
         diet: add(cap.diet_score, com && com.diet_score),
-        capEd: cap.ed_score, capDiet: cap.diet_score,
-        comEd: com ? com.ed_score : null, comDiet: com ? com.diet_score : null,
+        comDiet: com ? com.diet_score : null,
       };
       final.phrase = DIET_PHRASES.test(text);
-      final.topic = ED_TOPIC.test(text);
       scores.set(text, final);
       if (DEBUG) {
         const f = (x) => (x == null ? "n/a" : x.toFixed(2));
         const comPart = COMMENT_WEIGHT > 0
-          ? ` (comments ed=${f(final.comEd)} diet=${f(final.comDiet)} x${COMMENT_WEIGHT})` : "";
-        console.log(`[Gentle Feed] ed=${f(final.ed)} diet=${f(final.diet)}${final.phrase ? " +phrase" : ""}${final.topic ? "" : " (no ED topic)"} -> ${decide(text)}${comPart}`,
+          ? ` (comments diet=${f(final.comDiet)} x${COMMENT_WEIGHT})` : "";
+        console.log(`[savED] diet=${f(final.diet)}${final.phrase ? " +phrase" : ""} -> ${decide(text)}${comPart}`,
           text.slice(0, 80));
-        if (imageText) console.log(`[Gentle Feed]   image text: "${imageText.slice(0, 120)}"`);
+        if (imageText) console.log(`[savED]   image text: "${imageText.slice(0, 120)}"`);
       }
       rerenderAll();
     });
 }
 
-// Ask the server for both scores. Always includes the diet score, so the
-// strict switch can change what's blurred instantly.
+// Ask the server for the diet score.
 //
 // Captions waiting to be checked are collected for a moment and sent
 // together in batches of up to 12 (the server scores a batch in one pass,
@@ -810,38 +788,38 @@ function pump() {
       pump();
     };
     const timer = setTimeout(() => {
-      console.warn(`[Gentle Feed] server took too long, showing ${jobs.length} post(s)`);
+      console.warn(`[savED] server took too long, showing ${jobs.length} post(s)`);
       finish(null);
     }, TIMEOUT_MS);
 
     if (useBatch) {
       chrome.runtime.sendMessage(
-        { type: "classify_batch", texts: jobs.map((j) => j.text), threshold: 0.4, strict: true },
+        { type: "classify_batch", texts: jobs.map((j) => j.text) },
         (res) => {
           clearTimeout(timer);
           if (res && res.ok && Array.isArray(res.results)) {
             finish(res.results.map((r) => ({ ok: true, ...r })));
           } else if (res && /no-batch/.test(res.error || "")) {
             // Older server without batching: put these back, go one by one
-            console.warn("[Gentle Feed] server has no batch support; checking one at a time");
+            console.warn("[savED] server has no batch support; checking one at a time");
             useBatch = false;
             done = true;
             running--;
             queue.unshift(...jobs);
             pump();
           } else {
-            console.warn("[Gentle Feed] server unreachable:", res && res.error);
+            console.warn("[savED] server unreachable:", res && res.error);
             finish(null);
           }
         }
       );
     } else {
       chrome.runtime.sendMessage(
-        { type: "classify", text: jobs[0].text, threshold: 0.4, strict: true },
+        { type: "classify", text: jobs[0].text },
         (res) => {
           clearTimeout(timer);
           if (!res || !res.ok) {
-            console.warn("[Gentle Feed] server unreachable:", res && res.error);
+            console.warn("[savED] server unreachable:", res && res.error);
             finish(null);
           } else {
             finish([res]);
@@ -864,6 +842,10 @@ function nearScreen(el) {
 // ---- 4. Scan the page, and rescan as posts load or get rebuilt ----------
 function scan() {
   if (!ready) return; // wait until settings are loaded
+  if (!settings.enabled) {
+    removeStaleCovers([]); // switched off: take every cover off
+    return;
+  }
   const items = getItems();
   items.forEach(checkPost);
   removeStaleCovers(items);
@@ -906,20 +888,21 @@ function queueScan() {
 const observer = new MutationObserver(queueScan);
 
 observer.observe(document.body, { childList: true, subtree: true });
-console.log("[Gentle Feed] running");
+console.log("[savED] running");
 
 // ---- 5. Load settings, then start ---------------------------------------
-chrome.storage.sync.get({ strict: true }, (saved) => {
-  settings.strict = saved.strict;
+chrome.storage.sync.get({ enabled: true }, (saved) => {
+  settings.enabled = saved.enabled;
   ready = true;
   logSettings();
   scan();
 });
 
-// Strict mode switched in the popup: re-decide every post right away.
-// Scores are already saved, so no need to ask the server again.
+// Switched on or off in the popup: update the page right away.
+// Scores are already saved, so switching back on doesn't ask the server again.
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes.strict) settings.strict = changes.strict.newValue;
+  if (!changes.enabled) return;
+  settings.enabled = changes.enabled.newValue;
   logSettings();
-  rerenderAll();
+  scan();
 });
